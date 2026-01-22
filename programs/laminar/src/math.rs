@@ -249,10 +249,10 @@ mod tests {
         // Scenario: TVL = 200 SOL, Liability = 100 SOL, aSOL supply = 100
         let tvl = 200 * SOL_PRECISION;
         let liability = 100 * SOL_PRECISION;
-        let aSOL_supply = 100 * SOL_PRECISION;
+        let asol_supply = 100 * SOL_PRECISION;
         
         // Equity = 100 SOL, NAV = 100/100 = 1 SOL per aSOL
-        assert_eq!(nav_asol(tvl, liability, aSOL_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), SOL_PRECISION);
     }
 
     #[test]
@@ -260,10 +260,10 @@ mod tests {
         // Scenario: TVL = 200 SOL, Liability = 180 SOL, aSOL supply = 20
         let tvl = 200 * SOL_PRECISION;
         let liability = 180 * SOL_PRECISION;
-        let aSOL_supply = 20 * SOL_PRECISION;
+        let asol_supply = 20 * SOL_PRECISION;
         
         // Equity = 20 SOL, NAV = 20/20 = 1 SOL per aSOL
-        assert_eq!(nav_asol(tvl, liability, aSOL_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), SOL_PRECISION);
     }
 
     #[test]
@@ -271,9 +271,9 @@ mod tests {
         // TVL < Liability should return NAV = 0
         let tvl = 90 * SOL_PRECISION;
         let liability = 100 * SOL_PRECISION;
-        let aSOL_supply = 50 * SOL_PRECISION;
+        let asol_supply = 50 * SOL_PRECISION;
         
-        assert_eq!(nav_asol(tvl, liability, aSOL_supply), 0);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), 0);
     }
 
     #[test]
@@ -281,9 +281,9 @@ mod tests {
         // First mint case - no aSOL exists yet
         let tvl = 100 * SOL_PRECISION;
         let liability = 0;
-        let aSOL_supply = 0;
+        let asol_supply = 0;
         
-        assert_eq!(nav_asol(tvl, liability, aSOL_supply), 0);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), 0);
     }
 
     #[test]
@@ -291,13 +291,13 @@ mod tests {
         // Initial state: TVL = 200 SOL, Liability = 100 SOL
         let initial_tvl = 200 * SOL_PRECISION;
         let liability = 100 * SOL_PRECISION;
-        let aSOL_supply = 100 * SOL_PRECISION;
+        let asol_supply = 100 * SOL_PRECISION;
         
         // Initial CR = 200%
         assert_eq!(compute_cr_bps(initial_tvl, liability), 20_000);
         
         // Initial aSOL NAV = 1.0 SOL
-        assert_eq!(nav_asol(initial_tvl, liability, aSOL_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(initial_tvl, liability, asol_supply), SOL_PRECISION);
         
         // Simulate 40% SOL price drop (TVL drops to 120 SOL)
         let crashed_tvl = 120 * SOL_PRECISION;
@@ -307,7 +307,7 @@ mod tests {
         
         // New aSOL NAV = (120 - 100) / 100 = 0.2 SOL
         // Equity absorbed the entire loss
-        let new_nav = nav_asol(crashed_tvl, liability, aSOL_supply);
+        let new_nav = nav_asol(crashed_tvl, liability, asol_supply);
         assert_eq!(new_nav, SOL_PRECISION / 5); // 0.2 SOL
     }
 
@@ -316,7 +316,7 @@ mod tests {
         // Initial state: TVL = 200 SOL, Liability = 100 SOL
         let initial_tvl = 200 * SOL_PRECISION;
         let liability = 100 * SOL_PRECISION;
-        let aSOL_supply = 100 * SOL_PRECISION;
+        let asol_supply = 100 * SOL_PRECISION;
         
         // Simulate 60% SOL price drop (TVL drops to 80 SOL)
         let crashed_tvl = 80 * SOL_PRECISION;
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(compute_cr_bps(crashed_tvl, liability), 8_000);
         
         // aSOL NAV should be 0 (TVL < Liability)
-        assert_eq!(nav_asol(crashed_tvl, liability, aSOL_supply), 0);
+        assert_eq!(nav_asol(crashed_tvl, liability, asol_supply), 0);
     }
 
     #[test]
@@ -357,10 +357,10 @@ mod tests {
         // SOL price = $100 (with USD_PRECISION = 1e6)
         // Expected liability = 100,000 / 100 = 1,000 SOL = 1,000 * SOL_PRECISION lamports
         
-        let amUSD_supply = 100_000 * USD_PRECISION;
+        let amusd_supply = 100_000 * USD_PRECISION;
         let sol_price = 100 * USD_PRECISION;
         
-        let liability = compute_liability_sol(amUSD_supply, sol_price).unwrap();
+        let liability = compute_liability_sol(amusd_supply, sol_price).unwrap();
         assert_eq!(liability, 1_000 * SOL_PRECISION);
     }
 
