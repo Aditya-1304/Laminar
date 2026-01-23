@@ -11,22 +11,36 @@ pub struct GlobalState {
   /// Protocol Authority (Admin)
   pub authority: Pubkey,
 
+  /// SPL token mint for amUSD (senior tranche)
   pub amusd_mint: Pubkey,
 
+  /// SPL token mint for aSOL (junior tranche)
   pub asol_mint: Pubkey,
 
+  /// Collateral held by protocol in lamports
+  /// This is the TVL in sol based units
   pub total_collateral_lamports: u64,
 
+  /// Total amUSD supply (with USD_PRECISION = 1e6)
+  /// Represent total dollar-dominated debt
   pub amusd_supply: u64,
 
+  /// Total aSOL supply (with SOL_PRECISION = 1e9)
+  /// Represent total equity shares
   pub asol_supply: u64,
 
+  /// Minimum collateral ratio in basis points (e.g., 13000 = 130%)
+  /// Protocol will reject amUSD mints that would drop CR below this threshold 
   pub min_cr_bps: u64,
 
+  /// Target collateral ratio in basis points (e.g., 15000 = 150%)
+  /// Used for fee skewing and risk signaling
   pub target_cr_bps: u64,
 
+  /// Emergency pause for amUSD minting
   pub mint_paused: bool,
 
+  /// Emergency pause for redemptions
   pub redeem_paused: bool,
 
   pub mock_sol_price_usd: u64,
@@ -58,21 +72,25 @@ impl GlobalState {
 
 #[account]
 pub struct CollateralVault {
+  /// LST mint that this vault holds
   pub lst_mint: Pubkey,
 
+  /// Vault authority (PDA) - signs transfers from vault
   pub vault_authority: Pubkey,
 
+  /// Bump seed for vault_authority PDA
   pub bump: u8,
 
+  /// Reserved space for future upgrades
   pub _reserved: [u64; 8],
 }
 
 impl CollateralVault {
-  pub const LEN: usize = 8 +
-    32 +
-    32 +
-    1 +
-    64;
+  pub const LEN: usize = 8 + // discriminator
+    32 + // lst_mint
+    32 + // vault_authority
+    1 + // bump
+    64; // _reserved
 }
 
 pub const GLOBAL_STATE_SEED: &[u8] = b"global_state";
