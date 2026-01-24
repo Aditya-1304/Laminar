@@ -28,4 +28,12 @@ pub mod laminar {
             mock_lst_to_sol_rate,
         )
     }
+
+    /// Mint amUSD by depositing LST collateral
+    pub fn mint_amusd(
+        ctx: Context<MintAmUSD>,
+        lst_amount: u64,
+    ) -> Result<()> {
+        instructions::mint_amusd::handler(ctx, lst_amount)
+    }
 }
