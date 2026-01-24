@@ -2,7 +2,10 @@
 //! User burns amUSD and receives LST collateral back
 
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn};
+use anchor_spl::{
+  associated_token::AssociatedToken,
+  token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
+};
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
@@ -17,7 +20,6 @@ pub fn handler(
   let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
   let current_tvl = ctx.accounts.global_state.total_collateral_lamports;
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
-  let min_cr_bps = ctx.accounts.global_state.min_cr_bps;
 
   require!(!redeem_paused, ErrorCode::RedeemPaused);
   require!(amusd_amount > 0, ErrorCode::ZeroAmount);
@@ -42,11 +44,16 @@ pub fn handler(
   let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
     .ok_or(ErrorCode::MathOverflow)?;
 
-  msg!("LST to return: {}", lst_net);
+  let lst_fee = mul_div_down(fee_sol, SOL_PRECISION, mock_lst_to_sol_rate)
+    .ok_or(ErrorCode::MathOverflow)?;
 
-  // Simulate post-state for CR check
+
+  msg!("LST to user: {}", lst_net);
+  msg!("LST fee to treasury: {}", lst_fee);
+
+  // Simulate post-state for balance sheet check
   let new_tvl = current_tvl
-    .checked_sub(sol_value_net) // TVL decreases by net (fee stays in vault)
+    .checked_sub(sol_value_gross) // Full amount leaves (user gets net, treasury gets fee)
     .ok_or(ErrorCode::InsufficientCollateral)?;
 
   let new_amusd_supply = current_amusd_supply
@@ -63,11 +70,10 @@ pub fn handler(
 
   let new_equity = compute_equity_sol(new_tvl, new_liability);
 
-  // CR check - only enforce if there's still debt
+  // Users must be able to exit even during crisis
   if new_amusd_supply > 0 {
     let new_cr = compute_cr_bps(new_tvl, new_liability);
     msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
-    assert_cr_above_minimum(new_cr, min_cr_bps)?;
   } else {
     msg!("All amUSD redeemed - CR check skipped");
   }
@@ -94,28 +100,45 @@ pub fn handler(
   let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.bumps.vault_authority]];
   let signer = &[&seeds[..]];
 
-  let transfer_accounts = TransferChecked {
+  let transfer_user_accounts = TransferChecked {
     from: ctx.accounts.vault.to_account_info(),
     mint: ctx.accounts.lst_mint.to_account_info(),
     to: ctx.accounts.user_lst_account.to_account_info(),
     authority: ctx.accounts.vault_authority.to_account_info(),
   };
 
-  let cpi_ctx_transfer = CpiContext::new_with_signer(
+  let cpi_ctx_user = CpiContext::new_with_signer(
     ctx.accounts.token_program.to_account_info(),
-    transfer_accounts,
+    transfer_user_accounts,
     signer
   );
 
-  token_interface::transfer_checked(cpi_ctx_transfer, lst_net, ctx.accounts.lst_mint.decimals)?;
+  token_interface::transfer_checked(cpi_ctx_user, lst_net, ctx.accounts.lst_mint.decimals)?;
   msg!("Transferred {} LST to user", lst_net);
+
+  if lst_fee > 0 {
+    let transfer_treasury_accounts = TransferChecked {
+      from: ctx.accounts.vault.to_account_info(),
+      mint: ctx.accounts.lst_mint.to_account_info(),
+      to: ctx.accounts.treasury_lst_account.to_account_info(),
+      authority: ctx.accounts.vault_authority.to_account_info(),
+    };
+
+    let cpi_ctx_treasury = CpiContext::new_with_signer(
+      ctx.accounts.token_program.to_account_info(),
+      transfer_treasury_accounts,
+      signer
+    );
+    token_interface::transfer_checked(cpi_ctx_treasury, lst_fee, ctx.accounts.lst_mint.decimals)?;
+    msg!("Transferred {} LST fee to treasury", lst_fee);
+  };
 
   // Update global state atomically
   let global_state = &mut ctx.accounts.global_state;
   global_state.total_collateral_lamports = new_tvl;
   global_state.amusd_supply = new_amusd_supply;
 
-  msg!(" New TVL: {} lamports (fee retained improves CR)", new_tvl);
+  msg!(" New TVL: {} lamports", new_tvl);
   msg!(" New amUSD supply: {}", new_amusd_supply);
 
   Ok(())
@@ -132,6 +155,7 @@ pub struct RedeemAmUSD<'info> {
     seeds = [GLOBAL_STATE_SEED],
     bump,
     has_one = amusd_mint,
+    has_one = treasury,
   )]
   pub global_state: Account<'info, GlobalState>,
 
@@ -144,6 +168,18 @@ pub struct RedeemAmUSD<'info> {
     token::mint = amusd_mint,
   )]
   pub user_amusd_account: InterfaceAccount<'info, TokenAccount>,
+
+  /// CHECK: Verified by has_one constraint on global_state
+  pub treasury: UncheckedAccount<'info>,
+
+  /// Treasury's LST token account (receives redemption fee)
+  #[account(
+    init_if_needed,
+    payer = user,
+    associated_token::mint = lst_mint,
+    associated_token::authority = treasury,
+  )]
+  pub treasury_lst_account: InterfaceAccount<'info, TokenAccount>,
 
   /// User's LST token account (receives redeemed LST)
   #[account(
@@ -171,6 +207,8 @@ pub struct RedeemAmUSD<'info> {
   pub lst_mint: InterfaceAccount<'info, Mint>,
 
   pub token_program: Interface<'info, TokenInterface>,
+  pub associated_token_program: Program<'info, AssociatedToken>,
+  pub system_program: Program<'info, System>,
 }
 
 #[error_code]
