@@ -65,8 +65,8 @@ pub fn handler(
 
   msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
 
+  // Invariant checks BEFORE any state changes
   assert_cr_above_minimum(new_cr, min_cr_bps)?;
-
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
   let transfer_accounts = TransferChecked {
@@ -89,19 +89,34 @@ pub fn handler(
   let seeds = &[GLOBAL_STATE_SEED, &[ctx.bumps.global_state]];
   let signer = &[&seeds[..]];
 
-  let mint_accounts = MintTo {
+  let mint_to_user = MintTo {
         mint: ctx.accounts.amusd_mint.to_account_info(),
         to: ctx.accounts.user_amusd_account.to_account_info(),
         authority: ctx.accounts.global_state.to_account_info(),
     };
-    let cpi_ctx = CpiContext::new_with_signer(
+    let cpi_ctx_user = CpiContext::new_with_signer(
         ctx.accounts.token_program.to_account_info(),
-        mint_accounts,
+        mint_to_user,
         signer,
     );
-    token_interface::mint_to(cpi_ctx, amusd_net)?;
-
+    token_interface::mint_to(cpi_ctx_user, amusd_net)?;
     msg!("Minted {} amUSD to user", amusd_net);
+
+    // Mint fee to treasury
+    let mint_to_treasury = MintTo {
+      mint: ctx.accounts.amusd_mint.to_account_info(),
+      to: ctx.accounts.treasury_amusd_account.to_account_info(),
+      authority: ctx.accounts.global_state.to_account_info(),
+    };
+
+    let cpi_ctx_treasury = CpiContext::new_with_signer(
+      ctx.accounts.token_program.to_account_info(),
+      mint_to_treasury,
+      signer,
+    );
+
+    token_interface::mint_to(cpi_ctx_treasury, fee)?;
+    msg!("Minted {} amUSD fee to treasury", fee);
 
     let global_state = &mut ctx.accounts.global_state;
     global_state.total_collateral_lamports = new_tvl;
@@ -109,7 +124,7 @@ pub fn handler(
 
     msg!("✅ Mint complete!");
     msg!("New TVL: {} lamports", new_tvl);
-    msg!("New amUSD supply: {}", new_amusd_supply);
+    msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
 
   Ok(())
 }
@@ -125,6 +140,7 @@ pub struct MintAmUSD<'info> {
     seeds = [GLOBAL_STATE_SEED],
     bump,
     has_one = amusd_mint,
+    has_one = treasury,
   )]
   pub global_state: Account<'info, GlobalState>,
 
@@ -133,8 +149,24 @@ pub struct MintAmUSD<'info> {
   pub amusd_mint: InterfaceAccount<'info, Mint>,
 
   /// User's amUSD token account (recieves minted amUSD)
-  #[account(mut)]
+  #[account(
+    mut,
+    token::mint = amusd_mint,
+    token::authority = user,
+  )]
   pub user_amusd_account: InterfaceAccount<'info, TokenAccount>,
+
+  /// Treasury's amUSD token account (recieves protocol fees)
+  /// SECURITY: Must be owned by treasury wallet to prevent fee theft
+  #[account(
+    mut,
+    token::mint = amusd_mint,
+    token::authority = treasury,
+  )]
+  pub treasury_amusd_account: InterfaceAccount<'info, TokenAccount>,
+
+  /// CHECK: Verified by has_one constraint on global_state
+  pub treasury: UncheckedAccount<'info>,
 
   /// User's LST token account (source of collateral)
   #[account(

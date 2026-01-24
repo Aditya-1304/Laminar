@@ -19,6 +19,8 @@ pub fn handler(
   global_state.amusd_mint = ctx.accounts.amusd_mint.key();
   global_state.asol_mint = ctx.accounts.asol_mint.key();
 
+  global_state.treasury = ctx.accounts.authority.key();
+
   global_state.total_collateral_lamports = 0;
   global_state.amusd_supply = 0;
   global_state.asol_supply = 0;
@@ -32,7 +34,7 @@ pub fn handler(
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
 
-  global_state._reserved = [0; 8];
+  global_state._reserved = [0; 4];
 
   msg!("Protocol initialized!");
   msg!("amUSD mint: {}", global_state.amusd_mint);

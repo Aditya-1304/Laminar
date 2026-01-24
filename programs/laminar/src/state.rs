@@ -17,6 +17,9 @@ pub struct GlobalState {
   /// SPL token mint for aSOL (junior tranche)
   pub asol_mint: Pubkey,
 
+  /// Treasury wallet - recieves protocol fees
+  pub treasury: Pubkey,
+
   /// Collateral held by protocol in lamports
   /// This is the TVL in sol based units
   pub total_collateral_lamports: u64,
@@ -47,7 +50,7 @@ pub struct GlobalState {
 
   pub mock_lst_to_sol_rate: u64,
 
-  pub _reserved: [u64; 8],
+  pub _reserved: [u64; 4],
 }
 
 impl GlobalState {
@@ -55,6 +58,7 @@ impl GlobalState {
     32 + // authority
     32 + // amusd_mint
     32 + // asol_mint
+    32 + // treasury
     8 + // total_collateral_lamports
     8 + // amusd_supply
     8 + // asol_supply
@@ -64,7 +68,7 @@ impl GlobalState {
     1 + // redeem_paused
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
-    64; // _reserved
+    32; // _reserved
 }
 
 /// Collateral vault - holds LST tokens
