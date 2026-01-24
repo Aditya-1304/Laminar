@@ -47,7 +47,7 @@ pub struct GlobalState {
 
   pub mock_lst_to_sol_rate: u64,
 
-  pub reserved: [u64; 8],
+  pub _reserved: [u64; 8],
 }
 
 impl GlobalState {

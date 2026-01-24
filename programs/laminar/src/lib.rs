@@ -1,8 +1,11 @@
 use anchor_lang::prelude::*;
 
-mod math;
-mod invariants;
-mod state;
+pub mod math;
+pub mod invariants;
+pub mod state;
+pub mod instructions;
+
+use instructions::*;
 
 declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 
@@ -10,11 +13,19 @@ declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 pub mod laminar {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        msg!("Greetings from: {:?}", ctx.program_id);
-        Ok(())
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        min_cr_bps: u64,
+        target_cr_bps: u64,
+        mock_sol_price_usd: u64,
+        mock_lst_to_sol_rate: u64,
+    ) -> Result<()> {
+        instructions::initialize::handler(
+            ctx,
+            min_cr_bps,
+            target_cr_bps,
+            mock_sol_price_usd,
+            mock_lst_to_sol_rate,
+        )
     }
 }
-
-#[derive(Accounts)]
-pub struct Initialize {}

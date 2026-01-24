@@ -3,7 +3,7 @@
 //! No external depedencies, fully testable in isolation
 
 
-use anchor_lang::prelude::*;
+// use anchor_lang::prelude::*;
 
 pub const SOL_PRECISION: u64 = 1_000_000_000;
 pub const USD_PRECISION: u64 = 1_000_000;
