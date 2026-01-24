@@ -36,4 +36,12 @@ pub mod laminar {
     ) -> Result<()> {
         instructions::mint_amusd::handler(ctx, lst_amount)
     }
+
+    /// Redeem amUSD by burning debt and receiving LST
+    pub fn redeem_amusd(
+        ctx: Context<RedeemAmUSD>,
+        amusd_amount: u64,
+    ) -> Result<()> {
+        instructions::redeem_amusd::handler(ctx, amusd_amount)
+    }
 }
