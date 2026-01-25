@@ -4,6 +4,7 @@ pub mod math;
 pub mod invariants;
 pub mod state;
 pub mod instructions;
+pub mod error;
 
 use instructions::*;
 

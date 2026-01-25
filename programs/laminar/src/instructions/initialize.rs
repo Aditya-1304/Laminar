@@ -21,6 +21,8 @@ pub fn handler(
 
   global_state.treasury = ctx.accounts.authority.key();
 
+  global_state.supported_lst_mint = ctx.accounts.lst_mint.key();
+
   global_state.total_collateral_lamports = 0;
   global_state.amusd_supply = 0;
   global_state.asol_supply = 0;
@@ -34,11 +36,12 @@ pub fn handler(
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
 
-  global_state._reserved = [0; 4];
+  global_state._reserved = [0; 3];
 
   msg!("Protocol initialized!");
   msg!("amUSD mint: {}", global_state.amusd_mint);
   msg!("aSOL mint: {}", global_state.asol_mint);
+  msg!("Supported LST: {}", global_state.supported_lst_mint);
   msg!("Min CR: {}bps", min_cr_bps);
   msg!("Target CR: {}bps", target_cr_bps);
 

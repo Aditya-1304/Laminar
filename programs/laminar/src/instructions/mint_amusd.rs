@@ -2,10 +2,12 @@
 //! User deposits LST collateral and receives amUSD at $1 NAV
 
 use anchor_lang::prelude::*;
+use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
+use crate::error::LaminarError;
 
 pub fn handler(
   ctx: Context<MintAmUSD>,
@@ -19,11 +21,12 @@ pub fn handler(
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
   let min_cr_bps = ctx.accounts.global_state.min_cr_bps;
 
-  require!(!mint_paused, ErrorCode::MintPaused);
+  require!(!mint_paused, LaminarError::MintPaused);
+  require!(lst_amount > 0, LaminarError::ZeroAmount);
 
   // SOL value of deposited LST
   let sol_value = compute_tvl_sol(lst_amount, mock_lst_to_sol_rate)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
@@ -32,14 +35,14 @@ pub fn handler(
   // sol_value is in lamports (1e9), price is in USD (1e6)
   // Result should be in USD (1e6)
   let amusd_gross = mul_div_down(sol_value, mock_sol_price_usd, SOL_PRECISION)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   msg!("amUSD gross (before fee): {}", amusd_gross);
 
   // fee (0.5% = 50 bps for now - will change this later)
   const BASE_FEE_BPS: u64 = 50;
   let (amusd_net, fee) = apply_fee(amusd_gross, BASE_FEE_BPS)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   msg!("Fee: {} amUSD", fee);
   msg!("amUSD net (to User): {}", amusd_net);
@@ -47,15 +50,15 @@ pub fn handler(
   // Simulate post-state to check CR
   let new_tvl = current_tvl
     .checked_add(sol_value)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   let new_amusd_supply = current_amusd_supply
     .checked_add(amusd_gross)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   // compute new liability in SOL terms
   let new_liability = compute_liability_sol(new_amusd_supply, mock_sol_price_usd)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   // compute new equity
   let new_equity = compute_equity_sol(new_tvl, new_liability);
@@ -159,7 +162,8 @@ pub struct MintAmUSD<'info> {
   /// Treasury's amUSD token account (recieves protocol fees)
   /// SECURITY: Must be owned by treasury wallet to prevent fee theft
   #[account(
-    mut,
+    init_if_needed,
+    payer = user,
     token::mint = amusd_mint,
     token::authority = treasury,
   )]
@@ -172,6 +176,7 @@ pub struct MintAmUSD<'info> {
   #[account(
     mut,
     token::mint = lst_mint,
+    token::authority = user,
   )]
   pub user_lst_account: InterfaceAccount<'info, TokenAccount>,
 
@@ -179,20 +184,25 @@ pub struct MintAmUSD<'info> {
   #[account(
     mut,
     token::mint = lst_mint,
+    token::authority = vault_authority,
   )]
   pub vault: InterfaceAccount<'info, TokenAccount>,
 
-  /// LST mint
+  /// CHECK: PDA validated by seeds
+  #[account(
+    seeds = [VAULT_AUTHORITY_SEED],
+    bump,
+  )]
+  pub vault_authority: UncheckedAccount<'info>,
+
+  /// LST mint - SECURITY: Must match whitelisted LST in GlobalState
+  #[account(
+    constraint = lst_mint.key() == global_state.supported_lst_mint @ LaminarError::UnsupportedLST
+  )]
   pub lst_mint: InterfaceAccount<'info, Mint>,
 
   pub token_program: Interface<'info, TokenInterface>,
+  pub associated_token_program: Program<'info, AssociatedToken>,
+  pub system_program: Program<'info, System>,
 }
 
-#[error_code]
-pub enum ErrorCode {
-  #[msg("Minting is currently paused")]
-  MintPaused,
-
-  #[msg("Math overflow occurred")]
-  MathOverflow,
-}

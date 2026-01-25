@@ -61,14 +61,14 @@ pub fn compute_tvl_sol(collateral_lamports: u64, lst_to_sol_rate: u64) -> Option
 /// 
 /// # Returns 
 /// Liability in lamports (SOL base units)
-pub fn compute_liability_sol(amusd_suuply: u64, sol_price_usd: u64) -> Option<u64> {
+pub fn compute_liability_sol(amusd_supply: u64, sol_price_usd: u64) -> Option<u64> {
   if sol_price_usd == 0 {
     return None;
   }
 
   // Convert amUSD (USD terms) to SOL terms
   // liability_sol = (amusd_supply / sol_price_usd) * SOL_PRECISION
-  mul_div_down(amusd_suuply, SOL_PRECISION, sol_price_usd)
+  mul_div_down(amusd_supply, SOL_PRECISION, sol_price_usd)
 }
 
 /// Compute SOL-denominated equity owned by aSOL holders

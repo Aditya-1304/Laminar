@@ -9,6 +9,7 @@ use anchor_spl::{
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
+use crate::error::LaminarError;
 
 pub fn handler(
   ctx: Context<RedeemAmUSD>,
@@ -21,31 +22,31 @@ pub fn handler(
   let current_tvl = ctx.accounts.global_state.total_collateral_lamports;
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
 
-  require!(!redeem_paused, ErrorCode::RedeemPaused);
-  require!(amusd_amount > 0, ErrorCode::ZeroAmount);
+  require!(!redeem_paused, LaminarError::RedeemPaused);
+  require!(amusd_amount > 0, LaminarError::ZeroAmount);
 
   msg!("amUSD to redeem: {}", amusd_amount);
 
   // calculate SOL value to return 
   let sol_value_gross = mul_div_down(amusd_amount, SOL_PRECISION, mock_sol_price_usd)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   msg!("SOL value (before fee): {}", sol_value_gross);
 
   // Apply redemption fee (25 bps = 0.25%, lower than mint fee to encourage redemption)
   const REDEEM_FEE_BPS: u64 = 25;
   let (sol_value_net, fee_sol) = apply_fee(sol_value_gross, REDEEM_FEE_BPS)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   msg!("Fee: {} SOL (retained in vault)", fee_sol);
   msg!("Net: {} SOL (to user)", sol_value_net);
 
   // Convert SOL amounts to LST amounts
   let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
   let lst_fee = mul_div_down(fee_sol, SOL_PRECISION, mock_lst_to_sol_rate)
-    .ok_or(ErrorCode::MathOverflow)?;
+    .ok_or(LaminarError::MathOverflow)?;
 
 
   msg!("LST to user: {}", lst_net);
@@ -54,16 +55,16 @@ pub fn handler(
   // Simulate post-state for balance sheet check
   let new_tvl = current_tvl
     .checked_sub(sol_value_gross) // Full amount leaves (user gets net, treasury gets fee)
-    .ok_or(ErrorCode::InsufficientCollateral)?;
+    .ok_or(LaminarError::InsufficientCollateral)?;
 
   let new_amusd_supply = current_amusd_supply
     .checked_sub(amusd_amount)
-    .ok_or(ErrorCode::InsufficientSupply)?;
+    .ok_or(LaminarError::InsufficientSupply)?;
 
   // Compute new liability and equity
   let new_liability = if new_amusd_supply > 0 {
     compute_liability_sol(new_amusd_supply, mock_sol_price_usd)
-      .ok_or(ErrorCode::MathOverflow)?
+      .ok_or(LaminarError::MathOverflow)?
   } else {
     0 // No debt remaining
   };
@@ -166,6 +167,7 @@ pub struct RedeemAmUSD<'info> {
   #[account(
     mut,
     token::mint = amusd_mint,
+    token::authority = user,
   )]
   pub user_amusd_account: InterfaceAccount<'info, TokenAccount>,
 
@@ -185,6 +187,8 @@ pub struct RedeemAmUSD<'info> {
   #[account(
     mut,
     token::mint = lst_mint,
+    token::authority = user,
+
   )]
   pub user_lst_account: InterfaceAccount<'info, TokenAccount>,
 
@@ -192,6 +196,7 @@ pub struct RedeemAmUSD<'info> {
   #[account (
     mut,
     token::mint = lst_mint,
+    token::authority = vault_authority,
   )]
   pub vault: InterfaceAccount<'info, TokenAccount>,
 
@@ -204,6 +209,9 @@ pub struct RedeemAmUSD<'info> {
   pub vault_authority: UncheckedAccount<'info>,
 
   /// LST mint
+  #[account(
+    constraint = lst_mint.key() == global_state.supported_lst_mint @ LaminarError::UnsupportedLST
+  )]
   pub lst_mint: InterfaceAccount<'info, Mint>,
 
   pub token_program: Interface<'info, TokenInterface>,
@@ -211,20 +219,3 @@ pub struct RedeemAmUSD<'info> {
   pub system_program: Program<'info, System>,
 }
 
-#[error_code]
-pub enum ErrorCode {
-  #[msg("Redemptions are currently paused")]
-  RedeemPaused,
-
-  #[msg("Amount must be greater than zero")]
-  ZeroAmount,
-
-  #[msg("Math overflow occurred")]
-  MathOverflow,
-
-  #[msg("Insufficient collateral in vault")]
-  InsufficientCollateral,
-
-  #[msg("Insufficient supply to burn")]
-  InsufficientSupply,
-}

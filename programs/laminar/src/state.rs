@@ -20,6 +20,10 @@ pub struct GlobalState {
   /// Treasury wallet - recieves protocol fees
   pub treasury: Pubkey,
 
+  /// Whitelisted LST mint (e.g., jitoSOL, mSOL)
+  /// Only this LST can be deposited as collateral
+  pub supported_lst_mint: Pubkey,
+
   /// Collateral held by protocol in lamports
   /// This is the TVL in sol based units
   pub total_collateral_lamports: u64,
@@ -50,7 +54,7 @@ pub struct GlobalState {
 
   pub mock_lst_to_sol_rate: u64,
 
-  pub _reserved: [u64; 4],
+  pub _reserved: [u64; 3],
 }
 
 impl GlobalState {
@@ -59,6 +63,7 @@ impl GlobalState {
     32 + // amusd_mint
     32 + // asol_mint
     32 + // treasury
+    32 + // supported_lst_mint
     8 + // total_collateral_lamports
     8 + // amusd_supply
     8 + // asol_supply
@@ -68,11 +73,17 @@ impl GlobalState {
     1 + // redeem_paused
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
-    32; // _reserved
+    24; // _reserved (3 * 8 = 24)
 }
 
-/// Collateral vault - holds LST tokens
-/// One vault exists per whitelisted LST type
+/// Collateral vault metadata - holds LST vault configuration
+/// 
+/// TODO: FUTURE IMPLEMENTATION
+/// Currently unused in MVP-0 (single vault design).
+/// This struct will be activated when multi-LST support is added.
+/// For now, vault metadata is stored directly in GlobalState.
+///
+/// One vault account will exist per whitelisted LST type.
 
 #[account]
 pub struct CollateralVault {
