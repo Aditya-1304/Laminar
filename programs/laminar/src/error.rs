@@ -22,4 +22,7 @@ pub enum LaminarError {
 
   #[msg("LST mint not whitelisted - only supported_lst_mint is accepted")]
   UnsupportedLST,
+
+  #[msg("Protocol is insolvent - aSOL NAV is zero")]
+  InsolventProtocol,
 }

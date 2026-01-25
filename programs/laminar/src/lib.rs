@@ -45,4 +45,11 @@ pub mod laminar {
     ) -> Result<()> {
         instructions::redeem_amusd::handler(ctx, amusd_amount)
     }
+
+    pub fn mint_asol(
+        ctx: Context<MintAsol>,
+        lst_amount: u64,
+    ) -> Result<()> {
+        instructions::mint_asol::handler(ctx, lst_amount)
+    }
 }
