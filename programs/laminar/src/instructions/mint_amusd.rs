@@ -164,8 +164,8 @@ pub struct MintAmUSD<'info> {
   #[account(
     init_if_needed,
     payer = user,
-    token::mint = amusd_mint,
-    token::authority = treasury,
+    associated_token::mint = amusd_mint,
+    associated_token::authority = treasury,
   )]
   pub treasury_amusd_account: InterfaceAccount<'info, TokenAccount>,
 

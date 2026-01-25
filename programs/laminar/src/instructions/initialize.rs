@@ -2,7 +2,7 @@
 //! Creates GlobalState, token mints, and collateral vault
 
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
 use crate::state::*;
 // use crate::math::{SOL_PRECISION, USD_PRECISION};
 
@@ -84,12 +84,12 @@ pub struct Initialize<'info> {
   pub asol_mint: InterfaceAccount<'info, Mint>,
 
   /// Collateral vault - holds LST tokens
+  /// Deterministic ATA owned by vault_authority PDA
   #[account(
     init,
     payer = authority,
-    token::mint = lst_mint,
-    token::authority = vault_authority,
-    token::token_program = token_program,
+    associated_token::mint = lst_mint,
+    associated_token::authority = vault_authority,
   )]
   pub vault: InterfaceAccount<'info, TokenAccount>,
 
@@ -104,6 +104,7 @@ pub struct Initialize<'info> {
   pub vault_authority: UncheckedAccount<'info>,
 
   pub token_program: Interface<'info, TokenInterface>,
+  pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
 
 }
