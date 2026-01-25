@@ -46,10 +46,19 @@ pub mod laminar {
         instructions::redeem_amusd::handler(ctx, amusd_amount)
     }
 
+    /// Mint aSOL by depositing LST collateral at NAV
     pub fn mint_asol(
         ctx: Context<MintAsol>,
         lst_amount: u64,
     ) -> Result<()> {
         instructions::mint_asol::handler(ctx, lst_amount)
+    }
+
+    /// Redeem aSOL by burning equity and receiving LST at NAV
+    pub fn redeem_asol(
+        ctx: Context<RedeemAsol>,
+        asol_amount: u64,
+    ) -> Result<()> {
+        instructions::redeem_asol::handler(ctx, asol_amount)
     }
 }
