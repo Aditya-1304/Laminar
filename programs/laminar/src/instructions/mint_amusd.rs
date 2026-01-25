@@ -145,11 +145,11 @@ pub struct MintAmUSD<'info> {
     has_one = amusd_mint,
     has_one = treasury,
   )]
-  pub global_state: Account<'info, GlobalState>,
+  pub global_state: Box<Account<'info, GlobalState>>,
 
   /// amUSD mint
   #[account(mut)]
-  pub amusd_mint: InterfaceAccount<'info, Mint>,
+  pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// User's amUSD token account (recieves minted amUSD)
   #[account(
@@ -157,7 +157,7 @@ pub struct MintAmUSD<'info> {
     token::mint = amusd_mint,
     token::authority = user,
   )]
-  pub user_amusd_account: InterfaceAccount<'info, TokenAccount>,
+  pub user_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// Treasury's amUSD token account (recieves protocol fees)
   /// SECURITY: Must be owned by treasury wallet to prevent fee theft
@@ -167,7 +167,7 @@ pub struct MintAmUSD<'info> {
     associated_token::mint = amusd_mint,
     associated_token::authority = treasury,
   )]
-  pub treasury_amusd_account: InterfaceAccount<'info, TokenAccount>,
+  pub treasury_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// CHECK: Verified by has_one constraint on global_state
   pub treasury: UncheckedAccount<'info>,
@@ -178,7 +178,7 @@ pub struct MintAmUSD<'info> {
     token::mint = lst_mint,
     token::authority = user,
   )]
-  pub user_lst_account: InterfaceAccount<'info, TokenAccount>,
+  pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// Protocol vault (recieves LST)
   #[account(
@@ -186,7 +186,7 @@ pub struct MintAmUSD<'info> {
     token::mint = lst_mint,
     token::authority = vault_authority,
   )]
-  pub vault: InterfaceAccount<'info, TokenAccount>,
+  pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// CHECK: PDA validated by seeds
   #[account(
@@ -199,7 +199,7 @@ pub struct MintAmUSD<'info> {
   #[account(
     constraint = lst_mint.key() == global_state.supported_lst_mint @ LaminarError::UnsupportedLST
   )]
-  pub lst_mint: InterfaceAccount<'info, Mint>,
+  pub lst_mint: Box<InterfaceAccount<'info, Mint>>,
 
   pub token_program: Interface<'info, TokenInterface>,
   pub associated_token_program: Program<'info, AssociatedToken>,
