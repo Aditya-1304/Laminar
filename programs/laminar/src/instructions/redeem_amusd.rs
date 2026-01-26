@@ -38,33 +38,25 @@ pub fn handler(
 
   msg!("SOL value (before fee): {}", sol_value_gross);
 
+  // lst_gross = lst_net + lst_fee exactly 
+  let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, mock_lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+
   // Apply redemption fee (25 bps = 0.25%, lower than mint fee to encourage redemption)
   const REDEEM_FEE_BPS: u64 = 25;
-  let (sol_value_net, fee_sol) = apply_fee(sol_value_gross, REDEEM_FEE_BPS)
+  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("Fee: {} SOL (retained in vault)", fee_sol);
-  msg!("Net: {} SOL (to user)", sol_value_net);
-
-  // Convert SOL amounts to LST amounts
-  let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+  msg!("LST gross: {}", lst_gross);
+  msg!("LST to user: {}", lst_net);
+  msg!("LST fee to treasury: {}", lst_fee);
 
   require!(
     lst_net >= min_lst_out,
     LaminarError::SlippageExceeded
   );
 
-  let lst_fee = mul_div_down(fee_sol, SOL_PRECISION, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
-
-
-  msg!("LST to user: {}", lst_net);
-  msg!("LST fee to treasury: {}", lst_fee);
-
  // Total LST being removed (user + treasury fee)
-  let total_lst_out = lst_net.checked_add(lst_fee)
-    .ok_or(LaminarError::MathOverflow)?;
+  let total_lst_out = lst_gross;
 
   let new_lst_amount = current_lst_amount
     .checked_sub(total_lst_out)
@@ -195,7 +187,11 @@ pub struct RedeemAmUSD<'info> {
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 
-  #[account(mut)]
+  #[account(
+    mut,
+    constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key())
+      @ LaminarError::InvalidMintAuthority,
+  )]
   pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// User's amUSD token account (source of burned amUSD)

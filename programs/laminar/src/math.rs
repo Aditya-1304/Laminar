@@ -131,21 +131,17 @@ pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
 /// 
 /// # Returns
 /// NAV in lamports per aSOL unit
-/// Returns 0 if TVL < liability (prevents negative equity propagation)
-/// Returns 0 if aSOL supply is 0 (edge case: first mint)
-pub fn nav_asol(tvl: u64, liability: u64, asol_supply: u64) -> u64 {
+/// Returns None if TVL < liability (prevents negative equity propagation)
+/// Returns None if aSOL supply is 0 (edge case: first mint)
+pub fn nav_asol(tvl: u64, liability: u64, asol_supply: u64) -> Option<u64> {
     if asol_supply == 0 {
-        return 0; // First mint case - will be handled specially
+        return None; // First mint case - will be handled specially
     }
     
     let equity = compute_equity_sol(tvl, liability);
     
-    if equity == 0 {
-        return 0; // Protocol is insolvent - aSOL worthless
-    }
-    
     // nav_asol = equity / asol_supply (both in lamports)
-    mul_div_down(equity, SOL_PRECISION, asol_supply).unwrap_or(0)
+    mul_div_down(equity, SOL_PRECISION, asol_supply)
 }
 
 /// Apply a fee to an amount and return net amount + fee
@@ -252,7 +248,7 @@ mod tests {
         let asol_supply = 100 * SOL_PRECISION;
         
         // Equity = 100 SOL, NAV = 100/100 = 1 SOL per aSOL
-        assert_eq!(nav_asol(tvl, liability, asol_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), Some(SOL_PRECISION));
     }
 
     #[test]
@@ -263,7 +259,7 @@ mod tests {
         let asol_supply = 20 * SOL_PRECISION;
         
         // Equity = 20 SOL, NAV = 20/20 = 1 SOL per aSOL
-        assert_eq!(nav_asol(tvl, liability, asol_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), Some(SOL_PRECISION));
     }
 
     #[test]
@@ -273,7 +269,7 @@ mod tests {
         let liability = 100 * SOL_PRECISION;
         let asol_supply = 50 * SOL_PRECISION;
         
-        assert_eq!(nav_asol(tvl, liability, asol_supply), 0);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), Some(0));
     }
 
     #[test]
@@ -283,7 +279,7 @@ mod tests {
         let liability = 0;
         let asol_supply = 0;
         
-        assert_eq!(nav_asol(tvl, liability, asol_supply), 0);
+        assert_eq!(nav_asol(tvl, liability, asol_supply), None);
     }
 
     #[test]
@@ -297,7 +293,7 @@ mod tests {
         assert_eq!(compute_cr_bps(initial_tvl, liability), 20_000);
         
         // Initial aSOL NAV = 1.0 SOL
-        assert_eq!(nav_asol(initial_tvl, liability, asol_supply), SOL_PRECISION);
+        assert_eq!(nav_asol(initial_tvl, liability, asol_supply), Some(SOL_PRECISION));
         
         // Simulate 40% SOL price drop (TVL drops to 120 SOL)
         let crashed_tvl = 120 * SOL_PRECISION;
@@ -308,7 +304,7 @@ mod tests {
         // New aSOL NAV = (120 - 100) / 100 = 0.2 SOL
         // Equity absorbed the entire loss
         let new_nav = nav_asol(crashed_tvl, liability, asol_supply);
-        assert_eq!(new_nav, SOL_PRECISION / 5); // 0.2 SOL
+        assert_eq!(new_nav, Some(SOL_PRECISION / 5)); // 0.2 SOL
     }
 
     #[test]
@@ -325,7 +321,7 @@ mod tests {
         assert_eq!(compute_cr_bps(crashed_tvl, liability), 8_000);
         
         // aSOL NAV should be 0 (TVL < Liability)
-        assert_eq!(nav_asol(crashed_tvl, liability, asol_supply), 0);
+        assert_eq!(nav_asol(crashed_tvl, liability, asol_supply), Some(0));
     }
 
     #[test]

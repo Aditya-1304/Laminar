@@ -174,7 +174,11 @@ pub struct MintAmUSD<'info> {
   pub global_state: Box<Account<'info, GlobalState>>,
 
   /// amUSD mint
-  #[account(mut)]
+  #[account(
+    mut,
+    constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) 
+      @ LaminarError::InvalidMintAuthority,
+  )]
   pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// User's amUSD token account (recieves minted amUSD)

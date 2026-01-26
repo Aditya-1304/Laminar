@@ -3,7 +3,7 @@
 
 use anchor_lang::prelude::*;
 
-/// Global protocol state - the single sorce of truth for the balance sheet and vault configuration
+/// Global protocol state - the single source of truth for the balance sheet and vault configuration
 /// This account is a singleton (only one exists per protocol deployment)
 
 #[account]

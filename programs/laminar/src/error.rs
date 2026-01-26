@@ -31,4 +31,7 @@ pub enum LaminarError {
   
   #[msg("Reentrancy detected")]
   Reentrancy,
+
+  #[msg("Invalid mint authority - must be global_state PDA")]
+  InvalidMintAuthority,
 }

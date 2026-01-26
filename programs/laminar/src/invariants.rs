@@ -12,8 +12,11 @@ use anchor_lang::prelude::*;
 /// * `liability` - Total liabilities in lamports 
 /// * `equity` - Total equity in lamports
 pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {
+  let total = liability.checked_add(equity)
+    .ok_or(ProtocolError::ArithmeticOverflow)?;
+
   require!(
-    tvl == liability.checked_add(equity).unwrap_or(u64::MAX),
+    tvl == total,
     ProtocolError::BalanceSheetViolation
   );
   Ok(())
@@ -81,6 +84,9 @@ pub enum ProtocolError {
     
     #[msg("Supply is zero - cannot perform this operation")]
     ZeroSupply,
+
+    #[msg("Arithmetic overflow in invariant check")]
+    ArithmeticOverflow,
 }
 
 

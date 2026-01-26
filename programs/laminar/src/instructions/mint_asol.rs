@@ -55,6 +55,7 @@ pub fn handler(
     SOL_PRECISION
   } else {
     nav_asol(current_tvl, current_liability, current_asol_supply)
+      .ok_or(LaminarError::MathOverflow)?
   };
 
   // First mint: NAV = 1 SOL per aSOL 
@@ -214,7 +215,11 @@ pub struct MintAsol<'info> {
   pub global_state: Box<Account<'info, GlobalState>>,
 
   /// aSOL mint
-  #[account(mut)]
+  #[account(
+    mut,
+    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) 
+      @ LaminarError::InvalidMintAuthority,
+  )]
   pub asol_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// User's aSOL token account (receives minted aSOL)

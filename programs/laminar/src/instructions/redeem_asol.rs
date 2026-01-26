@@ -45,11 +45,10 @@ pub fn handler(
   };
 
   // Calculate current NAV
-  let current_nav = nav_asol(current_tvl, current_liability, current_asol_supply);
-
-  if current_nav == 0 {
-    return Err(LaminarError::InsolventProtocol.into());
-  }
+  let current_nav = match nav_asol(current_tvl, current_liability, current_asol_supply) {
+    Some(nav) if nav > 0 => nav,
+    _ => return Err(LaminarError::InsolventProtocol.into()),
+  };
 
   msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
 
@@ -60,34 +59,23 @@ pub fn handler(
 
   msg!("SOL value (before fee): {}", sol_value_gross);
 
-  // Apply redemption fee (15 bps = 0.15%, lowest fee to encourage liquidity)
-  const REDEEM_FEE_BPS: u64 = 15;
-  let (sol_value_net, fee_sol) = apply_fee(sol_value_gross, REDEEM_FEE_BPS)
-    .ok_or(LaminarError::MathOverflow)?;
-
-  msg!("Fee: {} SOL", fee_sol);
-  msg!("Net: {} SOL (to user)", sol_value_net);
-
-  // Convert SOL amounts to LST amounts
   let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
+  // Apply redemption fee (15 bps = 0.15%, lowest fee to encourage liquidity)
+  const REDEEM_FEE_BPS: u64 = 15;
+  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
+
+
+  msg!("LST gross: {}", lst_gross);
+  msg!("LST to user: {}", lst_net);
+  msg!("LST fee to treasury: {}", lst_fee);
 
   require!(
     lst_net >= min_lst_out,
     LaminarError::SlippageExceeded
   );
-
-  // Calculate fee by subtraction to ensure lst_gross = lst_net + lst_fee
-  let lst_fee = lst_gross
-    .checked_sub(lst_net)
-    .ok_or(LaminarError::MathOverflow)?;
-
-  msg!("LST gross: {}", lst_gross);
-  msg!("LST to user: {}", lst_net);
-  msg!("LST fee to treasury: {}", lst_fee);
 
   let total_lst_out = lst_gross;  // Already accounts for user + treasury
 
@@ -216,7 +204,11 @@ pub struct RedeemAsol<'info> {
   pub global_state: Box<Account<'info, GlobalState>>,
 
   /// aSOL mint
-  #[account(mut)]
+  #[account(
+    mut,
+    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key())
+      @ LaminarError::InvalidMintAuthority,
+  )]
   pub asol_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// User's aSOL token account (source of burned aSOL)
