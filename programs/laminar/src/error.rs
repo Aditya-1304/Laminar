@@ -34,4 +34,7 @@ pub enum LaminarError {
 
   #[msg("Invalid mint authority - must be global_state PDA")]
   InvalidMintAuthority,
+
+  #[msg("Invalid account state")]
+  InvalidAccountState
 }

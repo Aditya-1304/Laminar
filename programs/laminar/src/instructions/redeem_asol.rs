@@ -27,7 +27,7 @@ pub fn handler(
 
   {
     // Lock acquires
-    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
 
     // Validations
     require!(!guard.state.redeem_paused, LaminarError::RedeemPaused);
@@ -201,8 +201,7 @@ pub struct RedeemAsol<'info> {
   /// aSOL mint
   #[account(
     mut,
-    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key())
-      @ LaminarError::InvalidMintAuthority,
+    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) @ LaminarError::InvalidMintAuthority,
   )]
   pub asol_mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -211,6 +210,9 @@ pub struct RedeemAsol<'info> {
     mut,
     token::mint = asol_mint,
     token::authority = user,
+    constraint = user_lst_account.close_authority == 
+      anchor_lang::solana_program::program_option::COption::None 
+      @ LaminarError::InvalidAccountState,
   )]
   pub user_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -223,6 +225,9 @@ pub struct RedeemAsol<'info> {
     payer = user,
     associated_token::mint = lst_mint,
     associated_token::authority = treasury,
+    constraint = user_lst_account.close_authority == 
+      anchor_lang::solana_program::program_option::COption::None 
+      @ LaminarError::InvalidAccountState,
   )]
   pub treasury_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -231,6 +236,9 @@ pub struct RedeemAsol<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
+    constraint = user_lst_account.close_authority == 
+      anchor_lang::solana_program::program_option::COption::None 
+      @ LaminarError::InvalidAccountState,
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -239,6 +247,9 @@ pub struct RedeemAsol<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
+    constraint = user_lst_account.close_authority == 
+      anchor_lang::solana_program::program_option::COption::None 
+      @ LaminarError::InvalidAccountState,
   )]
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 

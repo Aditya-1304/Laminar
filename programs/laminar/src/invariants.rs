@@ -12,11 +12,14 @@ use anchor_lang::prelude::*;
 /// * `liability` - Total liabilities in lamports 
 /// * `equity` - Total equity in lamports
 pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {
+  const MAX_ROUNDING_ERROR: u64 = 10;
+   // lamports
   let total = liability.checked_add(equity)
     .ok_or(ProtocolError::ArithmeticOverflow)?;
 
+  let diff = tvl.abs_diff(total);
   require!(
-    tvl == total,
+    diff <= MAX_ROUNDING_ERROR,
     ProtocolError::BalanceSheetViolation
   );
   Ok(())

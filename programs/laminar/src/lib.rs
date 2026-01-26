@@ -14,6 +14,8 @@ declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 
 #[program]
 pub mod laminar {
+    use crate::reentrancy::ReentrancyGuard;
+
     use super::*;
 
     pub fn initialize(
@@ -74,9 +76,9 @@ pub mod laminar {
         mint_paused: bool,
         redeem_paused: bool,
     ) -> Result<()> {
-        let global_state = &mut ctx.accounts.global_state;
-        global_state.mint_paused = mint_paused;
-        global_state.redeem_paused = redeem_paused;
+        let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+        guard.state.mint_paused = mint_paused;
+        guard.state.redeem_paused = redeem_paused;
 
         emit!(crate::events::EmergencyPause {
             authority: ctx.accounts.authority.key(),
