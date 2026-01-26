@@ -96,11 +96,11 @@ pub fn compute_equity_sol(tvl: u64, liability: u64) -> u64 {
 /// Returns u64::MAX if liability is 0 (infinite CR - no debt exists)
 pub fn compute_cr_bps(tvl: u64, liability: u64) -> u64 {
   if liability == 0 {
-    return u64::MAX; // No debt = undefined CR (treated as infinite for safety)
+    return u64::MAX; // No debt = undefined CR (treated as infinite)
   }
 
   // CR = (TVL / Liability) * BPS_PRECISION
-  mul_div_down(tvl, BPS_PRECISION, liability).unwrap_or(0)
+  mul_div_down(tvl, BPS_PRECISION, liability).unwrap_or(u64::MAX)
 }
 
 /// Compute Net Asset Value (NAV) of amUSD in SOL terms

@@ -105,6 +105,11 @@ pub fn handler(
     msg!("No debt exists - CR check skipped");
   }
 
+  require!(
+    ctx.accounts.vault.amount >= total_lst_out,
+    LaminarError::InsufficientCollateral
+  );
+
   // Invariant check
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 

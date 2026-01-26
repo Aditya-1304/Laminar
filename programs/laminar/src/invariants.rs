@@ -26,6 +26,10 @@ pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Resu
 /// * `cr_bps` - Current collateral ratio is above the minimum threshold 
 /// * `min_cr_bps` - Minimum allowed CR in basis points
 pub fn assert_cr_above_minimum(cr_bps: u64, min_cr_bps: u64) -> Result<()> {
+
+  if cr_bps == u64::MAX {
+    return Ok(());
+  }
   require!(
     cr_bps >= min_cr_bps,
     ProtocolError::CollateralRatioTooLow

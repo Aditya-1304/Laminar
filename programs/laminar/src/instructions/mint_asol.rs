@@ -99,6 +99,11 @@ pub fn handler(
     msg!("Post-mint CR: infinite (no debt exists)");
   }
 
+  // Reject aSOL mints if protocol is insolvent (aSOL would be worthless)
+  // This prevents users from depositing into a dead protocol
+  if new_liability > 0 && new_equity == 0 {
+    return Err(LaminarError::InsolventProtocol.into());
+  }
   
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
