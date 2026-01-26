@@ -6,15 +6,20 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::state::*;
+use crate::{events::AsolRedeemed, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::unlock_state;
+use crate::lock_state;
 
 pub fn handler(
   ctx: Context<RedeemAsol>,
   asol_amount: u64,
+  min_lst_out: u64,
 ) -> Result<()> {
+
+  lock_state!(ctx.accounts.global_state);
 
   let redeem_paused = ctx.accounts.global_state.redeem_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
@@ -69,6 +74,11 @@ pub fn handler(
 
   let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
+
+  require!(
+    lst_net >= min_lst_out,
+    LaminarError::SlippageExceeded
+  );
 
   // Calculate fee by subtraction to ensure lst_gross = lst_net + lst_fee
   let lst_fee = lst_gross
@@ -176,6 +186,17 @@ pub fn handler(
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {}", new_asol_supply);
 
+  emit!(AsolRedeemed {
+    user: ctx.accounts.user.key(),
+    asol_burned: asol_amount,
+    lst_received: lst_net,
+    fee: lst_fee,
+    nav: current_nav,
+    new_tvl,
+    new_equity,
+  });
+
+  unlock_state!(ctx.accounts.global_state);
   Ok(())
 }
 

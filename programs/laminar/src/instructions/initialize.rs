@@ -33,6 +33,8 @@ pub fn handler(
   global_state.mint_paused = false;
   global_state.redeem_paused = false;
 
+  global_state.locked = false;
+
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
 
@@ -44,6 +46,15 @@ pub fn handler(
   msg!("Supported LST: {}", global_state.supported_lst_mint);
   msg!("Min CR: {}bps", min_cr_bps);
   msg!("Target CR: {}bps", target_cr_bps);
+
+  emit!(crate::events::ProtocolInitialized {
+    authority: ctx.accounts.authority.key(),
+    amusd_mint: global_state.amusd_mint,
+    asol_mint: global_state.asol_mint,
+    supported_lst_mint: global_state.supported_lst_mint,
+    min_cr_bps,
+    target_cr_bps,
+  });
 
   Ok(())
 }

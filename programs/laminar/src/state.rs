@@ -50,6 +50,9 @@ pub struct GlobalState {
   /// Emergency pause for redemptions
   pub redeem_paused: bool,
 
+  /// Reentrancy lock (solana CPI safety)
+  pub locked: bool,
+
   pub mock_sol_price_usd: u64,
 
   pub mock_lst_to_sol_rate: u64,
@@ -71,6 +74,7 @@ impl GlobalState {
     8 + // target_cr_bps
     1 + // mint_paused
     1 + // redeem_paused
+    1 + // locked
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
     24; // _reserved (3 * 8 = 24)

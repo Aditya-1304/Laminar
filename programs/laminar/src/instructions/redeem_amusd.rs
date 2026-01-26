@@ -6,15 +6,20 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::state::*;
+use crate::{events::AmUSDRedeemed, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::unlock_state;
+use crate::lock_state;
 
 pub fn handler(
   ctx: Context<RedeemAmUSD>,
   amusd_amount: u64,
+  min_lst_out: u64,
 ) -> Result<()> {
+
+  lock_state!(ctx.accounts.global_state);
 
   let redeem_paused = ctx.accounts.global_state.redeem_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
@@ -44,6 +49,11 @@ pub fn handler(
   // Convert SOL amounts to LST amounts
   let lst_net = mul_div_down(sol_value_net, SOL_PRECISION, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
+
+  require!(
+    lst_net >= min_lst_out,
+    LaminarError::SlippageExceeded
+  );
 
   let lst_fee = mul_div_down(fee_sol, SOL_PRECISION, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
@@ -79,12 +89,14 @@ pub fn handler(
   let new_equity = compute_equity_sol(new_tvl, new_liability);
 
   // Users must be able to exit even during crisis
-  if new_amusd_supply > 0 {
-    let new_cr = compute_cr_bps(new_tvl, new_liability);
-    msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
+  let new_cr = if new_amusd_supply > 0 {
+    let cr = compute_cr_bps(new_tvl, new_liability);
+    msg!("Post-redeem CR: {}bps ({}%)", cr, cr / 100);
+    cr
   } else {
     msg!("All amUSD redeemed - CR check skipped");
-  }
+    u64::MAX  // No debt = infinite CR
+  };
 
   require!(
     ctx.accounts.vault.amount >= total_lst_out,
@@ -153,6 +165,17 @@ pub fn handler(
 
   msg!(" New TVL: {} lamports", new_tvl);
   msg!(" New amUSD supply: {}", new_amusd_supply);
+
+  emit!(AmUSDRedeemed {
+    user: ctx.accounts.user.key(),
+    amusd_burned: amusd_amount,
+    lst_received: lst_net,
+    fee: lst_fee,
+    new_tvl,
+    new_cr_bps: new_cr,
+  });
+
+  unlock_state!(ctx.accounts.global_state);
 
   Ok(())
 }

@@ -25,4 +25,10 @@ pub enum LaminarError {
 
   #[msg("Protocol is insolvent - aSOL NAV is zero")]
   InsolventProtocol,
+
+  #[msg("Slippage tolerance exceeded")]
+  SlippageExceeded,  
+  
+  #[msg("Reentrancy detected")]
+  Reentrancy,
 }

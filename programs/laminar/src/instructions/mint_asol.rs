@@ -7,15 +7,20 @@ use anchor_spl::{
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo}
 };
 
-use crate::state::*;
+use crate::{events::AsolMinted, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::unlock_state;
+use crate::lock_state;
 
 pub fn handler(
   ctx: Context<MintAsol>,
   lst_amount: u64,
+  min_asol_out: u64,
 ) -> Result<()> {
+
+  lock_state!(ctx.accounts.global_state);
 
   let mint_paused = ctx.accounts.global_state.mint_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
@@ -45,12 +50,17 @@ pub fn handler(
     0 // No debt exists yet
   };
 
+  // Compute current NAV (needed for both calculation and event emission)
+  let current_nav = if current_asol_supply == 0 {
+    SOL_PRECISION
+  } else {
+    nav_asol(current_tvl, current_liability, current_asol_supply)
+  };
+
   // First mint: NAV = 1 SOL per aSOL 
   let asol_gross = if current_asol_supply == 0 {
     sol_value
   } else {
-    let current_nav = nav_asol(current_tvl, current_liability, current_asol_supply);
-
     if current_nav == 0 {
       return Err(LaminarError::InsolventProtocol.into());
     }
@@ -69,6 +79,11 @@ pub fn handler(
 
   msg!("Fee: {} aSOL", fee);
   msg!("aSOL net (to user): {}", asol_net);
+
+  require!(
+    asol_net >= min_asol_out,
+    LaminarError::SlippageExceeded
+  );
 
   let new_lst_amount = current_lst_amount
     .checked_add(lst_amount)
@@ -168,6 +183,17 @@ pub fn handler(
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {} (user {} + treasury {})", new_asol_supply, asol_net, fee);
 
+  emit!(AsolMinted {
+    user: ctx.accounts.user.key(),
+    lst_deposited: lst_amount,
+    asol_minted: asol_net,
+    fee,
+    nav: current_nav,
+    new_tvl,
+    new_equity,
+  });
+
+  unlock_state!(ctx.accounts.global_state);
 
   Ok(())
 }

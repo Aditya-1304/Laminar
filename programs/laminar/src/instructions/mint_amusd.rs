@@ -4,15 +4,21 @@
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
+use crate::events::AmUSDMinted;
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::unlock_state;
+use crate::lock_state;
 
 pub fn handler(
   ctx: Context<MintAmUSD>,
   lst_amount: u64, 
+  min_amusd_out: u64,
 ) -> Result<()> {
+
+  lock_state!(ctx.accounts.global_state);
 
   let mint_paused = ctx.accounts.global_state.mint_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
@@ -48,6 +54,11 @@ pub fn handler(
 
   msg!("Fee: {} amUSD", fee);
   msg!("amUSD net (to User): {}", amusd_net);
+
+  require!(
+    amusd_net >= min_amusd_out,
+    LaminarError::SlippageExceeded
+  );
 
   let new_lst_amount = current_lst_amount
     .checked_add(lst_amount)
@@ -96,41 +107,53 @@ pub fn handler(
   let signer = &[&seeds[..]];
 
   let mint_to_user = MintTo {
-        mint: ctx.accounts.amusd_mint.to_account_info(),
-        to: ctx.accounts.user_amusd_account.to_account_info(),
-        authority: ctx.accounts.global_state.to_account_info(),
-    };
-    let cpi_ctx_user = CpiContext::new_with_signer(
-        ctx.accounts.token_program.to_account_info(),
-        mint_to_user,
-        signer,
-    );
-    token_interface::mint_to(cpi_ctx_user, amusd_net)?;
-    msg!("Minted {} amUSD to user", amusd_net);
+    mint: ctx.accounts.amusd_mint.to_account_info(),
+    to: ctx.accounts.user_amusd_account.to_account_info(),
+    authority: ctx.accounts.global_state.to_account_info(),
+  };
 
-    // Mint fee to treasury
-    let mint_to_treasury = MintTo {
-      mint: ctx.accounts.amusd_mint.to_account_info(),
-      to: ctx.accounts.treasury_amusd_account.to_account_info(),
-      authority: ctx.accounts.global_state.to_account_info(),
-    };
+  let cpi_ctx_user = CpiContext::new_with_signer(
+    ctx.accounts.token_program.to_account_info(),
+    mint_to_user,
+    signer,
+  );
+  token_interface::mint_to(cpi_ctx_user, amusd_net)?;
+  msg!("Minted {} amUSD to user", amusd_net);
 
-    let cpi_ctx_treasury = CpiContext::new_with_signer(
-      ctx.accounts.token_program.to_account_info(),
-      mint_to_treasury,
-      signer,
-    );
+  // Mint fee to treasury
+  let mint_to_treasury = MintTo {
+    mint: ctx.accounts.amusd_mint.to_account_info(),
+    to: ctx.accounts.treasury_amusd_account.to_account_info(),
+    authority: ctx.accounts.global_state.to_account_info(),
+  };
 
-    token_interface::mint_to(cpi_ctx_treasury, fee)?;
-    msg!("Minted {} amUSD fee to treasury", fee);
+  let cpi_ctx_treasury = CpiContext::new_with_signer(
+    ctx.accounts.token_program.to_account_info(),
+    mint_to_treasury,
+    signer,
+  );
 
-    let global_state = &mut ctx.accounts.global_state;
-    global_state.total_lst_amount = new_lst_amount;
-    global_state.amusd_supply = new_amusd_supply;
+  token_interface::mint_to(cpi_ctx_treasury, fee)?;
+  msg!("Minted {} amUSD fee to treasury", fee);
 
-    msg!("✅ Mint complete!");
-    msg!("New LST amount: {} lamports", new_lst_amount);
-    msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
+  let global_state = &mut ctx.accounts.global_state;
+  global_state.total_lst_amount = new_lst_amount;
+  global_state.amusd_supply = new_amusd_supply;
+
+  msg!("✅ Mint complete!");
+  msg!("New LST amount: {} lamports", new_lst_amount);
+  msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
+
+  emit!(AmUSDMinted {
+    user: ctx.accounts.user.key(),
+    lst_deposited: lst_amount,
+    amusd_minted: amusd_net,
+    fee,
+    new_tvl,
+    new_cr_bps: new_cr,
+  });    
+
+  unlock_state!(ctx.accounts.global_state);
 
   Ok(())
 }
