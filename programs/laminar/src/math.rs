@@ -93,10 +93,10 @@ pub fn compute_equity_sol(tvl: u64, liability: u64) -> u64 {
 /// 
 /// # Returns 
 /// CR in basis points (e.g., 15000 = 150%)
-/// Returns 0 if liability is 0 (edge case: no debt exists)
+/// Returns u64::MAX if liability is 0 (infinite CR - no debt exists)
 pub fn compute_cr_bps(tvl: u64, liability: u64) -> u64 {
   if liability == 0 {
-    return 0; // No debt = undefined CR (treated as 0 for safety)
+    return u64::MAX; // No debt = undefined CR (treated as infinite for safety)
   }
 
   // CR = (TVL / Liability) * BPS_PRECISION
@@ -223,7 +223,7 @@ mod tests {
     fn test_compute_cr_bps_zero_liability() {
         // No debt = CR is undefined, return 0
         let tvl = 100 * SOL_PRECISION;
-        assert_eq!(compute_cr_bps(tvl, 0), 0);
+        assert_eq!(compute_cr_bps(tvl, 0), u64::MAX);
     }
 
     #[test]

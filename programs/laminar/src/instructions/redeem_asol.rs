@@ -19,7 +19,7 @@ pub fn handler(
   let redeem_paused = ctx.accounts.global_state.redeem_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
   let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_tvl = ctx.accounts.global_state.total_collateral_lamports;
+  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
   let current_asol_supply = ctx.accounts.global_state.asol_supply;
 
@@ -27,6 +27,9 @@ pub fn handler(
   require!(asol_amount > 0, LaminarError::ZeroAmount);
 
   msg!("aSOL to redeem: {}", asol_amount);
+
+  let current_tvl = compute_tvl_sol(current_lst_amount, mock_lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
 
   // Compute current liability
   let current_liability = if current_amusd_supply > 0 {
@@ -76,10 +79,14 @@ pub fn handler(
   msg!("LST to user: {}", lst_net);
   msg!("LST fee to treasury: {}", lst_fee);
 
-  // Simulate post-state for balance sheet check
-  let new_tvl = current_tvl
-    .checked_sub(sol_value_gross) // Full amount leaves (user gets net, treasury gets fee)
+  let total_lst_out = lst_gross;  // Already accounts for user + treasury
+
+  let new_lst_amount = current_lst_amount
+    .checked_sub(total_lst_out)
     .ok_or(LaminarError::InsufficientCollateral)?;
+
+  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
 
   let new_asol_supply = current_asol_supply
     .checked_sub(asol_amount)
@@ -157,7 +164,7 @@ pub fn handler(
 
   // Update global state atomically
   let global_state = &mut ctx.accounts.global_state;
-  global_state.total_collateral_lamports = new_tvl;
+  global_state.total_lst_amount = new_lst_amount;
   global_state.asol_supply = new_asol_supply;
 
   msg!(" Redeem complete!");

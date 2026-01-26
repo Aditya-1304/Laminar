@@ -24,9 +24,9 @@ pub struct GlobalState {
   /// Only this LST can be deposited as collateral
   pub supported_lst_mint: Pubkey,
 
-  /// Collateral held by protocol in lamports
-  /// This is the TVL in sol based units
-  pub total_collateral_lamports: u64,
+  /// Total LST tokens held by protocol (raw LST units, NOT SOL-converted)
+  /// Use compute_tvl_sol() to get SOL-denominated value
+  pub total_lst_amount: u64,
 
   /// Total amUSD supply (with USD_PRECISION = 1e6)
   /// Represent total dollar-dominated debt
@@ -64,7 +64,7 @@ impl GlobalState {
     32 + // asol_mint
     32 + // treasury
     32 + // supported_lst_mint
-    8 + // total_collateral_lamports
+    8 + // total_lst_amount
     8 + // amusd_supply
     8 + // asol_supply
     8 + // min_cr_bps

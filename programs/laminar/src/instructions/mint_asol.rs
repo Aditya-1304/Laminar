@@ -20,7 +20,7 @@ pub fn handler(
   let mint_paused = ctx.accounts.global_state.mint_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
   let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_tvl = ctx.accounts.global_state.total_collateral_lamports;
+  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
   let current_asol_supply = ctx.accounts.global_state.asol_supply;
 
@@ -34,6 +34,9 @@ pub fn handler(
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
 
+  // Compute current TVL from LST holdings
+  let current_tvl = compute_tvl_sol(current_lst_amount, mock_lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
   // Compute current liability to calculate NAV
   let current_liability = if current_amusd_supply > 0 {
     compute_liability_sol(current_amusd_supply, mock_sol_price_usd)
@@ -67,9 +70,11 @@ pub fn handler(
   msg!("Fee: {} aSOL", fee);
   msg!("aSOL net (to user): {}", asol_net);
 
-  // Simulate post-state for invariant checks
-  let new_tvl = current_tvl
-    .checked_add(sol_value)
+  let new_lst_amount = current_lst_amount
+    .checked_add(lst_amount)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
   let new_asol_supply = current_asol_supply
@@ -151,7 +156,7 @@ pub fn handler(
 
   // Update global state atomically
   let global_state = &mut ctx.accounts.global_state;
-  global_state.total_collateral_lamports = new_tvl;
+  global_state.total_lst_amount = new_lst_amount;
   global_state.asol_supply = new_asol_supply;
 
   msg!("Mint complete!");

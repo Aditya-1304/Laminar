@@ -23,7 +23,7 @@ pub fn handler(
 
   global_state.supported_lst_mint = ctx.accounts.lst_mint.key();
 
-  global_state.total_collateral_lamports = 0;
+  global_state.total_lst_amount = 0;
   global_state.amusd_supply = 0;
   global_state.asol_supply = 0;
 
@@ -69,6 +69,7 @@ pub struct Initialize<'info> {
     payer = authority,
     mint::decimals = 6, // USD_PRECISION = 1e6
     mint::authority = global_state,
+    mint::freeze_authority = global_state,
     mint::token_program = token_program
   )]
   pub amusd_mint: InterfaceAccount<'info, Mint>,
@@ -79,6 +80,7 @@ pub struct Initialize<'info> {
     payer = authority,
     mint::decimals = 9,
     mint::authority = global_state,
+    mint::freeze_authority = global_state,
     mint::token_program = token_program,
   )]
   pub asol_mint: InterfaceAccount<'info, Mint>,

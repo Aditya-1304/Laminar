@@ -17,7 +17,7 @@ pub fn handler(
   let mint_paused = ctx.accounts.global_state.mint_paused;
   let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
   let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_tvl = ctx.accounts.global_state.total_collateral_lamports;
+  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
   let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
   let min_cr_bps = ctx.accounts.global_state.min_cr_bps;
 
@@ -27,6 +27,8 @@ pub fn handler(
   // SOL value of deposited LST
   let sol_value = compute_tvl_sol(lst_amount, mock_lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
+
+  // LST tokens being deposited (will be added to vault)
 
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
@@ -47,10 +49,11 @@ pub fn handler(
   msg!("Fee: {} amUSD", fee);
   msg!("amUSD net (to User): {}", amusd_net);
 
-  // Simulate post-state to check CR
-  let new_tvl = current_tvl
-    .checked_add(sol_value)
+  let new_lst_amount = current_lst_amount
+    .checked_add(lst_amount)
     .ok_or(LaminarError::MathOverflow)?;
+
+  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
 
   let new_amusd_supply = current_amusd_supply
     .checked_add(amusd_gross)
@@ -122,11 +125,11 @@ pub fn handler(
     msg!("Minted {} amUSD fee to treasury", fee);
 
     let global_state = &mut ctx.accounts.global_state;
-    global_state.total_collateral_lamports = new_tvl;
+    global_state.total_lst_amount = new_lst_amount;
     global_state.amusd_supply = new_amusd_supply;
 
     msg!("✅ Mint complete!");
-    msg!("New TVL: {} lamports", new_tvl);
+    msg!("New LST amount: {} lamports", new_lst_amount);
     msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
 
   Ok(())
