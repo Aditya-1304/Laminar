@@ -6,12 +6,10 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::{events::AsolRedeemed, state::*};
+use crate::{events::AsolRedeemed, reentrancy::ReentrancyGuard, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
-use crate::unlock_state;
-use crate::lock_state;
 
 pub fn handler(
   ctx: Context<RedeemAsol>,
@@ -19,97 +17,100 @@ pub fn handler(
   min_lst_out: u64,
 ) -> Result<()> {
 
-  lock_state!(ctx.accounts.global_state);
+  let new_lst_amount: u64;
+  let new_asol_supply: u64;
+  let lst_net: u64;
+  let lst_fee: u64;
+  let new_tvl: u64;
+  let new_equity: u64;
+  let current_nav: u64;
 
-  let redeem_paused = ctx.accounts.global_state.redeem_paused;
-  let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
-  let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
-  let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
-  let current_asol_supply = ctx.accounts.global_state.asol_supply;
+  {
+    // Lock acquires
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
 
-  require!(!redeem_paused, LaminarError::RedeemPaused);
-  require!(asol_amount > 0, LaminarError::ZeroAmount);
+    // Validations
+    require!(!guard.state.redeem_paused, LaminarError::RedeemPaused);
+    require!(asol_amount > 0, LaminarError::ZeroAmount);
 
-  msg!("aSOL to redeem: {}", asol_amount);
+    msg!("aSOL to redeem: {}", asol_amount);
 
-  let current_tvl = compute_tvl_sol(current_lst_amount, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+    // math logic
+    let current_tvl = compute_tvl_sol(guard.state.total_lst_amount, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  // Compute current liability
-  let current_liability = if current_amusd_supply > 0 {
-    compute_liability_sol(current_amusd_supply, mock_sol_price_usd)
-      .ok_or(LaminarError::MathOverflow)?
-  } else {
-    0
-  };
+    let current_liability = if guard.state.amusd_supply > 0 {
+      compute_liability_sol(guard.state.amusd_supply, guard.state.mock_sol_price_usd)
+        .ok_or(LaminarError::MathOverflow)?
+    } else {
+      0
+    };
 
-  // Calculate current NAV
-  let current_nav = match nav_asol(current_tvl, current_liability, current_asol_supply) {
-    Some(nav) if nav > 0 => nav,
-    _ => return Err(LaminarError::InsolventProtocol.into()),
-  };
+    current_nav = match nav_asol(current_tvl, current_liability, guard.state.asol_supply) {
+      Some(nav) if nav > 0 => nav,
+      _ => return Err(LaminarError::InsolventProtocol.into()),
+    };
 
-  msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
+    msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
 
-  // Calculate SOL value to return (before fee)
-  // sol_value = asol_amount * nav_asol
-  let sol_value_gross = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
-    .ok_or(LaminarError::MathOverflow)?;
+    let sol_value_gross = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("SOL value (before fee): {}", sol_value_gross);
+    msg!("SOL value (before fee): {}", sol_value_gross);
 
-  let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+    let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  // Apply redemption fee (15 bps = 0.15%, lowest fee to encourage liquidity)
-  const REDEEM_FEE_BPS: u64 = 15;
-  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
-    .ok_or(LaminarError::MathOverflow)?;
+    const REDEEM_FEE_BPS: u64 = 15;
+    let fee_result = apply_fee(lst_gross, REDEEM_FEE_BPS)
+      .ok_or(LaminarError::MathOverflow)?;
 
+    lst_net = fee_result.0;
+    lst_fee = fee_result.1;
 
-  msg!("LST gross: {}", lst_gross);
-  msg!("LST to user: {}", lst_net);
-  msg!("LST fee to treasury: {}", lst_fee);
+    msg!("LST gross: {}", lst_gross);
+    msg!("LST to user: {}", lst_net);
+    msg!("LST fee to treasury: {}", lst_fee);
 
-  require!(
-    lst_net >= min_lst_out,
-    LaminarError::SlippageExceeded
-  );
+    require!(lst_net >= min_lst_out, LaminarError::SlippageExceeded);
 
-  let total_lst_out = lst_gross;  // Already accounts for user + treasury
+    let total_lst_out = lst_gross;
 
-  let new_lst_amount = current_lst_amount
-    .checked_sub(total_lst_out)
-    .ok_or(LaminarError::InsufficientCollateral)?;
+    new_lst_amount = guard.state.total_lst_amount
+      .checked_sub(total_lst_out)
+      .ok_or(LaminarError::InsufficientCollateral)?;
 
-  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+    new_tvl = compute_tvl_sol(new_lst_amount, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  let new_asol_supply = current_asol_supply
-    .checked_sub(asol_amount)
-    .ok_or(LaminarError::InsufficientSupply)?;
+    new_asol_supply = guard.state.asol_supply
+      .checked_sub(asol_amount)
+      .ok_or(LaminarError::InsufficientSupply)?;
 
-  // Liability doesn't change (only equity decreases)
-  let new_liability = current_liability;
+    let new_liability = current_liability;
+    new_equity = compute_equity_sol(new_tvl, new_liability);
 
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+    if new_liability > 0 {
+      let new_cr = compute_cr_bps(new_tvl, new_liability);
+      msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
+    } else {
+      msg!("No debt exists - CR check skipped");
+    }
 
-  // Users must be able to exit even during crisis - NO CR CHECK
-  if new_liability > 0 {
-    let new_cr = compute_cr_bps(new_tvl, new_liability);
-    msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
-  } else {
-    msg!("No debt exists - CR check skipped");
-  }
+    require!(
+      ctx.accounts.vault.amount >= total_lst_out,
+      LaminarError::InsufficientCollateral
+    );
 
-  require!(
-    ctx.accounts.vault.amount >= total_lst_out,
-    LaminarError::InsufficientCollateral
-  );
+    // Invariant checks
+    assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-  // Invariant check
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+    // Update state atomically
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.asol_supply = new_asol_supply;
+
+  } // release lock
+
 
   // Burn aSOL from user
   let burn_accounts = Burn {
@@ -165,12 +166,7 @@ pub fn handler(
     msg!("Transferred {} LST fee to treasury", lst_fee);
   }
 
-  // Update global state atomically
-  let global_state = &mut ctx.accounts.global_state;
-  global_state.total_lst_amount = new_lst_amount;
-  global_state.asol_supply = new_asol_supply;
-
-  msg!(" Redeem complete!");
+  msg!("Redeem complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {}", new_asol_supply);
 
@@ -184,7 +180,6 @@ pub fn handler(
     new_equity,
   });
 
-  unlock_state!(ctx.accounts.global_state);
   Ok(())
 }
 
@@ -255,7 +250,7 @@ pub struct RedeemAsol<'info> {
   )]
   pub vault_authority: UncheckedAccount<'info>,
 
-  /// LST mint - SECURITY: Must match whitelisted LST in GlobalState
+  /// LST mint
   #[account(
     constraint = lst_mint.key() == global_state.supported_lst_mint @ LaminarError::UnsupportedLST
   )]

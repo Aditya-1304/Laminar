@@ -6,12 +6,10 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::{events::AmUSDRedeemed, state::*};
+use crate::{events::AmUSDRedeemed, reentrancy::ReentrancyGuard, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
-use crate::unlock_state;
-use crate::lock_state;
 
 pub fn handler(
   ctx: Context<RedeemAmUSD>,
@@ -19,84 +17,89 @@ pub fn handler(
   min_lst_out: u64,
 ) -> Result<()> {
 
-  lock_state!(ctx.accounts.global_state);
+  let new_lst_amount: u64;
+  let new_amusd_supply: u64;
+  let lst_net: u64;
+  let lst_fee: u64;
+  let new_tvl: u64;
+  let new_cr: u64;
 
-  let redeem_paused = ctx.accounts.global_state.redeem_paused;
-  let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
-  let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
-  let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
+  {
+    // lock acquired
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
 
-  require!(!redeem_paused, LaminarError::RedeemPaused);
-  require!(amusd_amount > 0, LaminarError::ZeroAmount);
+    // Validations
+    require!(!guard.state.redeem_paused, LaminarError::RedeemPaused);
+    require!(amusd_amount > 0, LaminarError::ZeroAmount);
 
-  msg!("amUSD to redeem: {}", amusd_amount);
+    msg!("amUSD to redeem: {}", amusd_amount);
 
-  // calculate SOL value to return 
-  let sol_value_gross = mul_div_down(amusd_amount, SOL_PRECISION, mock_sol_price_usd)
-    .ok_or(LaminarError::MathOverflow)?;
+    // math logic
+    let sol_value_gross = mul_div_down(amusd_amount, SOL_PRECISION, guard.state.mock_sol_price_usd)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("SOL value (before fee): {}", sol_value_gross);
+    msg!("SOL value (before fee): {}", sol_value_gross);
 
-  // lst_gross = lst_net + lst_fee exactly 
-  let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, mock_lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+    let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  // Apply redemption fee (25 bps = 0.25%, lower than mint fee to encourage redemption)
-  const REDEEM_FEE_BPS: u64 = 25;
-  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
-    .ok_or(LaminarError::MathOverflow)?;
+    const REDEEM_FEE_BPS: u64 = 25;
+    let fee_result = apply_fee(lst_gross, REDEEM_FEE_BPS)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("LST gross: {}", lst_gross);
-  msg!("LST to user: {}", lst_net);
-  msg!("LST fee to treasury: {}", lst_fee);
+    lst_net = fee_result.0;
+    lst_fee = fee_result.1;
 
-  require!(
-    lst_net >= min_lst_out,
-    LaminarError::SlippageExceeded
-  );
+    msg!("LST gross: {}", lst_gross);
+    msg!("LST to user: {}", lst_net);
+    msg!("LST fee to treasury: {}", lst_fee);
 
- // Total LST being removed (user + treasury fee)
-  let total_lst_out = lst_gross;
+    require!(lst_net >= min_lst_out, LaminarError::SlippageExceeded);
 
-  let new_lst_amount = current_lst_amount
-    .checked_sub(total_lst_out)
-    .ok_or(LaminarError::InsufficientCollateral)?;
+    let total_lst_out = lst_gross;
 
-  // Compute new TVL from remaining LST
-  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+    new_lst_amount = guard.state.total_lst_amount
+      .checked_sub(total_lst_out)
+      .ok_or(LaminarError::InsufficientCollateral)?;
 
-  let new_amusd_supply = current_amusd_supply
-    .checked_sub(amusd_amount)
-    .ok_or(LaminarError::InsufficientSupply)?;
+    new_tvl = compute_tvl_sol(new_lst_amount, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  // Compute new liability and equity
-  let new_liability = if new_amusd_supply > 0 {
-    compute_liability_sol(new_amusd_supply, mock_sol_price_usd)
-      .ok_or(LaminarError::MathOverflow)?
-  } else {
-    0 // No debt remaining
-  };
+    new_amusd_supply = guard.state.amusd_supply
+      .checked_sub(amusd_amount)
+      .ok_or(LaminarError::InsufficientSupply)?;
 
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+    let new_liability = if new_amusd_supply > 0 {
+      compute_liability_sol(new_amusd_supply, guard.state.mock_sol_price_usd)
+        .ok_or(LaminarError::MathOverflow)?
+    } else {
+      0
+    };
 
-  // Users must be able to exit even during crisis
-  let new_cr = if new_amusd_supply > 0 {
-    let cr = compute_cr_bps(new_tvl, new_liability);
-    msg!("Post-redeem CR: {}bps ({}%)", cr, cr / 100);
-    cr
-  } else {
-    msg!("All amUSD redeemed - CR check skipped");
-    u64::MAX  // No debt = infinite CR
-  };
+    let new_equity = compute_equity_sol(new_tvl, new_liability);
 
-  require!(
-    ctx.accounts.vault.amount >= total_lst_out,
-    LaminarError::InsufficientCollateral
-  );
+    new_cr = if new_amusd_supply > 0 {
+      let cr = compute_cr_bps(new_tvl, new_liability);
+      msg!("Post-redeem CR: {}bps ({}%)", cr, cr / 100);
+      cr
+    } else {
+      msg!("All amUSD redeemed - CR check skipped");
+      u64::MAX
+    };
 
-  // Invariant check 
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+    require!(
+      ctx.accounts.vault.amount >= total_lst_out,
+      LaminarError::InsufficientCollateral
+    );
+
+    // Invariants check
+    assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+
+    // Update state atomically
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.amusd_supply = new_amusd_supply;
+
+  } // lock released
 
   // Burn amUSD from user
   let burn_accounts = Burn {
@@ -133,6 +136,7 @@ pub fn handler(
   token_interface::transfer_checked(cpi_ctx_user, lst_net, ctx.accounts.lst_mint.decimals)?;
   msg!("Transferred {} LST to user", lst_net);
 
+  // Transfer fee to treasury
   if lst_fee > 0 {
     let transfer_treasury_accounts = TransferChecked {
       from: ctx.accounts.vault.to_account_info(),
@@ -146,17 +150,14 @@ pub fn handler(
       transfer_treasury_accounts,
       signer
     );
+
     token_interface::transfer_checked(cpi_ctx_treasury, lst_fee, ctx.accounts.lst_mint.decimals)?;
     msg!("Transferred {} LST fee to treasury", lst_fee);
-  };
+  }
 
-  // Update global state atomically
-  let global_state = &mut ctx.accounts.global_state;
-  global_state.total_lst_amount = new_lst_amount;
-  global_state.amusd_supply = new_amusd_supply;
-
-  msg!(" New TVL: {} lamports", new_tvl);
-  msg!(" New amUSD supply: {}", new_amusd_supply);
+  msg!("Redeem complete!");
+  msg!("New TVL: {} lamports", new_tvl);
+  msg!("New amUSD supply: {}", new_amusd_supply);
 
   emit!(AmUSDRedeemed {
     user: ctx.accounts.user.key(),
@@ -167,8 +168,6 @@ pub fn handler(
     new_cr_bps: new_cr,
   });
 
-  unlock_state!(ctx.accounts.global_state);
-
   Ok(())
 }
 
@@ -177,7 +176,7 @@ pub struct RedeemAmUSD<'info> {
   #[account(mut)]
   pub user: Signer<'info>,
 
-  /// Globalstate PDA
+  /// GlobalState PDA
   #[account(
     mut,
     seeds = [GLOBAL_STATE_SEED],
@@ -187,6 +186,7 @@ pub struct RedeemAmUSD<'info> {
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 
+  /// amUSD mint
   #[account(
     mut,
     constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key())
@@ -219,12 +219,11 @@ pub struct RedeemAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
-
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// Protocol vault (source of LST)
-  #[account (
+  #[account(
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
@@ -232,7 +231,7 @@ pub struct RedeemAmUSD<'info> {
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// Vault authority PDA - signs transfers from vault
-  /// CHECK: PDA Validated by seeds 
+  /// CHECK: PDA validated by seeds
   #[account(
     seeds = [VAULT_AUTHORITY_SEED],
     bump,
@@ -249,4 +248,3 @@ pub struct RedeemAmUSD<'info> {
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
 }
-

@@ -1,16 +1,15 @@
-//! Mint amUSD instrution - creates stable debt
+//! Mint amUSD instruction - creates stable debt
 //! User deposits LST collateral and receives amUSD at $1 NAV
 
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
 use crate::events::AmUSDMinted;
+use crate::reentrancy::ReentrancyGuard;
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
-use crate::unlock_state;
-use crate::lock_state;
 
 pub fn handler(
   ctx: Context<MintAmUSD>,
@@ -18,74 +17,75 @@ pub fn handler(
   min_amusd_out: u64,
 ) -> Result<()> {
 
-  lock_state!(ctx.accounts.global_state);
+  let new_lst_amount: u64;
+  let new_amusd_supply: u64;
+  let amusd_net: u64;
+  let fee: u64;
+  let new_tvl: u64;
+  let new_cr: u64;
 
-  let mint_paused = ctx.accounts.global_state.mint_paused;
-  let mock_lst_to_sol_rate = ctx.accounts.global_state.mock_lst_to_sol_rate;
-  let mock_sol_price_usd = ctx.accounts.global_state.mock_sol_price_usd;
-  let current_lst_amount = ctx.accounts.global_state.total_lst_amount;
-  let current_amusd_supply = ctx.accounts.global_state.amusd_supply;
-  let min_cr_bps = ctx.accounts.global_state.min_cr_bps;
+  {
+    // LOCK ACQUIRED
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    
+    // CHECK: Validations
+    require!(!guard.state.mint_paused, LaminarError::MintPaused);
+    require!(lst_amount > 0, LaminarError::ZeroAmount);
 
-  require!(!mint_paused, LaminarError::MintPaused);
-  require!(lst_amount > 0, LaminarError::ZeroAmount);
+    // COMPUTE: All math logic
+    let sol_value = compute_tvl_sol(lst_amount, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  // SOL value of deposited LST
-  let sol_value = compute_tvl_sol(lst_amount, mock_lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+    msg!("LST deposited: {}", lst_amount);
+    msg!("SOL value: {}", sol_value);
 
-  // LST tokens being deposited (will be added to vault)
+    let amusd_gross = mul_div_down(sol_value, guard.state.mock_sol_price_usd, SOL_PRECISION)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("LST deposited: {}", lst_amount);
-  msg!("SOL value: {}", sol_value);
+    msg!("amUSD gross (before fee): {}", amusd_gross);
 
-  // Calculates amUSD to mint: sol_value * price (in USD terms)
-  // sol_value is in lamports (1e9), price is in USD (1e6)
-  // Result should be in USD (1e6)
-  let amusd_gross = mul_div_down(sol_value, mock_sol_price_usd, SOL_PRECISION)
-    .ok_or(LaminarError::MathOverflow)?;
+    const BASE_FEE_BPS: u64 = 50;
+    let fee_result = apply_fee(amusd_gross, BASE_FEE_BPS)
+      .ok_or(LaminarError::MathOverflow)?;
+    
+    amusd_net = fee_result.0;
+    fee = fee_result.1;
 
-  msg!("amUSD gross (before fee): {}", amusd_gross);
+    msg!("Fee: {} amUSD", fee);
+    msg!("amUSD net (to User): {}", amusd_net);
 
-  // fee (0.5% = 50 bps for now - will change this later)
-  const BASE_FEE_BPS: u64 = 50;
-  let (amusd_net, fee) = apply_fee(amusd_gross, BASE_FEE_BPS)
-    .ok_or(LaminarError::MathOverflow)?;
+    require!(amusd_net >= min_amusd_out, LaminarError::SlippageExceeded);
 
-  msg!("Fee: {} amUSD", fee);
-  msg!("amUSD net (to User): {}", amusd_net);
+    new_lst_amount = guard.state.total_lst_amount
+      .checked_add(lst_amount)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  require!(
-    amusd_net >= min_amusd_out,
-    LaminarError::SlippageExceeded
-  );
+    new_tvl = compute_tvl_sol(new_lst_amount, guard.state.mock_lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  let new_lst_amount = current_lst_amount
-    .checked_add(lst_amount)
-    .ok_or(LaminarError::MathOverflow)?;
+    new_amusd_supply = guard.state.amusd_supply
+      .checked_add(amusd_gross)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  let new_tvl = compute_tvl_sol(new_lst_amount, mock_lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+    let new_liability = compute_liability_sol(new_amusd_supply, guard.state.mock_sol_price_usd)
+      .ok_or(LaminarError::MathOverflow)?;
 
-  let new_amusd_supply = current_amusd_supply
-    .checked_add(amusd_gross)
-    .ok_or(LaminarError::MathOverflow)?;
+    let new_equity = compute_equity_sol(new_tvl, new_liability);
+    new_cr = compute_cr_bps(new_tvl, new_liability);
 
-  // compute new liability in SOL terms
-  let new_liability = compute_liability_sol(new_amusd_supply, mock_sol_price_usd)
-    .ok_or(LaminarError::MathOverflow)?;
+    msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
 
-  // compute new equity
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+    // INVARIANTS: Check before committing
+    assert_cr_above_minimum(new_cr, guard.state.min_cr_bps)?;
+    assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-  // compute new CR
-  let new_cr = compute_cr_bps(new_tvl, new_liability);
+    // EFFECT: Update state atomically
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.amusd_supply = new_amusd_supply;
 
-  msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
-
-  // Invariant checks BEFORE any state changes
-  assert_cr_above_minimum(new_cr, min_cr_bps)?;
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
-
+  } 
+  
+  // Transfer LST from user to vault
   let transfer_accounts = TransferChecked {
     from: ctx.accounts.user_lst_account.to_account_info(),
     mint: ctx.accounts.lst_mint.to_account_info(),
@@ -94,12 +94,11 @@ pub fn handler(
   };
 
   let cpi_ctx = CpiContext::new(
-    ctx.accounts.token_program.to_account_info(), 
+    ctx.accounts.token_program.to_account_info(),
     transfer_accounts,
   );
 
   token_interface::transfer_checked(cpi_ctx, lst_amount, ctx.accounts.lst_mint.decimals)?;
-
   msg!("Transferred {} LST to vault", lst_amount);
 
   // Mint amUSD to user (net amount after fee)
@@ -117,6 +116,7 @@ pub fn handler(
     mint_to_user,
     signer,
   );
+
   token_interface::mint_to(cpi_ctx_user, amusd_net)?;
   msg!("Minted {} amUSD to user", amusd_net);
 
@@ -136,11 +136,7 @@ pub fn handler(
   token_interface::mint_to(cpi_ctx_treasury, fee)?;
   msg!("Minted {} amUSD fee to treasury", fee);
 
-  let global_state = &mut ctx.accounts.global_state;
-  global_state.total_lst_amount = new_lst_amount;
-  global_state.amusd_supply = new_amusd_supply;
-
-  msg!("✅ Mint complete!");
+  msg!("Mint complete!");
   msg!("New LST amount: {} lamports", new_lst_amount);
   msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
 
@@ -151,9 +147,7 @@ pub fn handler(
     fee,
     new_tvl,
     new_cr_bps: new_cr,
-  });    
-
-  unlock_state!(ctx.accounts.global_state);
+  });
 
   Ok(())
 }
@@ -181,7 +175,7 @@ pub struct MintAmUSD<'info> {
   )]
   pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
-  /// User's amUSD token account (recieves minted amUSD)
+  /// User's amUSD token account (receives minted amUSD)
   #[account(
     mut,
     token::mint = amusd_mint,
@@ -189,8 +183,7 @@ pub struct MintAmUSD<'info> {
   )]
   pub user_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
-  /// Treasury's amUSD token account (recieves protocol fees)
-  /// SECURITY: Must be owned by treasury wallet to prevent fee theft
+  /// Treasury's amUSD token account (receives protocol fees)
   #[account(
     init_if_needed,
     payer = user,
@@ -210,7 +203,7 @@ pub struct MintAmUSD<'info> {
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
-  /// Protocol vault (recieves LST)
+  /// Protocol vault (receives LST)
   #[account(
     mut,
     token::mint = lst_mint,
@@ -225,7 +218,7 @@ pub struct MintAmUSD<'info> {
   )]
   pub vault_authority: UncheckedAccount<'info>,
 
-  /// LST mint - SECURITY: Must match whitelisted LST in GlobalState
+  /// LST mint
   #[account(
     constraint = lst_mint.key() == global_state.supported_lst_mint @ LaminarError::UnsupportedLST
   )]
@@ -235,4 +228,3 @@ pub struct MintAmUSD<'info> {
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
 }
-

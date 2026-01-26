@@ -6,6 +6,7 @@ pub mod state;
 pub mod instructions;
 pub mod error;
 pub mod events;
+pub mod reentrancy;
 
 use instructions::*;
 
@@ -100,17 +101,3 @@ pub struct EmergencyPause<'info> {
     pub global_state: Account<'info, state::GlobalState>
 }
 
-#[macro_export]
-macro_rules! lock_state {
-    ($state:expr) => {
-        require!(!$state.locked, LaminarError::Reentrancy);
-        $state.locked = true;
-    };
-}
-
-#[macro_export]
-macro_rules! unlock_state {
-    ($state:expr) => {
-        $state.locked = false;
-    };
-}
