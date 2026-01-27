@@ -6,7 +6,7 @@ pub mod state;
 pub mod instructions;
 pub mod error;
 pub mod events;
-pub mod reentrancy;
+// pub mod reentrancy;
 
 use instructions::*;
 
@@ -14,7 +14,7 @@ declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 
 #[program]
 pub mod laminar {
-    use crate::reentrancy::ReentrancyGuard;
+    // use crate::reentrancy::ReentrancyGuard;
 
     use super::*;
 
@@ -76,14 +76,16 @@ pub mod laminar {
         mint_paused: bool,
         redeem_paused: bool,
     ) -> Result<()> {
-        let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
-        guard.state.mint_paused = mint_paused;
-        guard.state.redeem_paused = redeem_paused;
+        let global_state = &mut ctx.accounts.global_state;
+        global_state.mint_paused = mint_paused;
+        global_state.redeem_paused = redeem_paused;
+        global_state.operation_counter = global_state.operation_counter.saturating_add(1);
 
         emit!(crate::events::EmergencyPause {
             authority: ctx.accounts.authority.key(),
             mint_paused,
             redeem_paused,
+            timestamp: ctx.accounts.clock.unix_timestamp,
         });
         Ok(())
     }
@@ -100,6 +102,7 @@ pub struct EmergencyPause<'info> {
         seeds = [b"global_state"],
         bump
     )]
-    pub global_state: Account<'info, state::GlobalState>
+    pub global_state: Account<'info, state::GlobalState>,
+    pub clock: Sysvar<'info, Clock>,
 }
 

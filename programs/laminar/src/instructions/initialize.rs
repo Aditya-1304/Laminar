@@ -4,7 +4,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
 use crate::{error::LaminarError, state::*};
-// use crate::math::{SOL_PRECISION, USD_PRECISION};
+use crate::math::{SOL_PRECISION};
 
 pub fn handler(
   ctx: Context<Initialize>,
@@ -13,8 +13,15 @@ pub fn handler(
   mock_sol_price_usd: u64,
   mock_lst_to_sol_rate: u64,
 ) -> Result<()> {
-    // Validate LST decimals  
-    require!(
+  require!(min_cr_bps >= 10_000, LaminarError::InvalidParameter);  // Min 100%
+  require!(target_cr_bps > min_cr_bps, LaminarError::InvalidParameter);
+  require!(mock_sol_price_usd > 0, LaminarError::ZeroAmount);
+  require!(mock_lst_to_sol_rate > 0, LaminarError::ZeroAmount);
+  require!(mock_lst_to_sol_rate >= SOL_PRECISION / 2, LaminarError::InvalidParameter);  // LST can't be worth less than half SOL
+
+
+  // Validate LST decimals  
+  require!(
     ctx.accounts.lst_mint.decimals == 9,
     LaminarError::InvalidDecimals
   );
@@ -62,6 +69,7 @@ pub fn handler(
     supported_lst_mint: global_state.supported_lst_mint,
     min_cr_bps,
     target_cr_bps,
+    timestamp: ctx.accounts.clock.unix_timestamp,
   });
 
   Ok(())
@@ -128,4 +136,5 @@ pub struct Initialize<'info> {
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
 
+  pub clock: Sysvar<'info, Clock>,
 }

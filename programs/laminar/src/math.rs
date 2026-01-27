@@ -124,6 +124,8 @@ pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
   mul_div_down(USD_PRECISION, SOL_PRECISION, sol_price_usd)
 }
 
+
+
 /// Compute Net Asset Value (NAV) of aSOL
 /// aSOL represents residual equity after amUSD debt is satisfied
 /// 

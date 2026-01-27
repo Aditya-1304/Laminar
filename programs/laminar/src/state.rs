@@ -64,6 +64,7 @@ pub struct GlobalState {
   pub mock_sol_price_usd: u64,
 
   pub mock_lst_to_sol_rate: u64,
+  
 
   pub _reserved: [u64; 2],
 }
@@ -87,7 +88,7 @@ impl GlobalState {
     1 + // locked
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
-    16; // _reserved (3 * 2 = 16)
+    16; // _reserved (2 * 8 = 16)
 }
 
 /// Collateral vault metadata - holds LST vault configuration

@@ -61,4 +61,22 @@ pub enum LaminarError {
 
   #[msg("TVL would fall below minimum threshold")]
   BelowMinimumTVL,
+
+  #[msg("Balance sheet invariant violated: TVL != Liability + Equity")]
+  BalanceSheetViolation,
+  
+  #[msg("Collateral ratio below minimum threshold")]
+  CollateralRatioTooLow,
+  
+  #[msg("Negative equity detected: TVL < Liability")]
+  NegativeEquity,
+  
+  #[msg("Supply is zero - cannot perform this operation")]
+  ZeroSupply,
+
+  #[msg("Arithmetic overflow in invariant check")]
+  ArithmeticOverflow,
+
+  #[msg("Invalid parameter value")]
+  InvalidParameter,
 }

@@ -1,124 +1,139 @@
 //! Mint aSOL instruction - Creates leveraged equity position
 //! User deposits LST collateral and receives aSOL at current NAV
-
 use anchor_lang::prelude::*;
 use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo}
 };
-
+use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
 use crate::{events::AsolMinted, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
-use crate::reentrancy::ReentrancyGuard;
 
 pub fn handler(
   ctx: Context<MintAsol>,
   lst_amount: u64,
   min_asol_out: u64,
 ) -> Result<()> {
+  // All validations before any state changes
 
+  let ix_sysvar = &ctx.accounts.instruction_sysvar;
+  let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(&ix_sysvar.to_account_info())?;
+  require!(current_index == 0, LaminarError::InvalidCPIContext);
 
-  let new_lst_amount: u64;
-  let new_asol_supply: u64;
-  let asol_net: u64;
-  let fee: u64;
-  let new_tvl: u64;
-  let new_equity: u64;
-  let current_nav: u64;
+  let global_state = &ctx.accounts.global_state;
+  
+  // Capture values
+  let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
+  let sol_price_used = global_state.mock_sol_price_usd;
+  let current_lst_amount = global_state.total_lst_amount;
+  let current_amusd_supply = global_state.amusd_supply;
+  let current_asol_supply = global_state.asol_supply;
+  let min_cr_bps = global_state.min_cr_bps;
 
-  {
-    // LOCK ACQUIRED
-    let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+  // Input validations
+  require!(!global_state.mint_paused, LaminarError::MintPaused);
+  require!(lst_amount > 0, LaminarError::ZeroAmount);
+  require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
-    // CHECK: Validations
-    require!(!guard.state.mint_paused, LaminarError::MintPaused);
-    require!(lst_amount > 0, LaminarError::ZeroAmount);
-    require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
+  // All math logic
 
-    // COMPUTE: All math logic
-    let sol_value = compute_tvl_sol(lst_amount, guard.state.mock_lst_to_sol_rate)
-      .ok_or(LaminarError::MathOverflow)?;
+  let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
 
-    msg!("LST deposited: {}", lst_amount);
-    msg!("SOL value: {}", sol_value);
+  msg!("LST deposited: {}", lst_amount);
+  msg!("SOL value: {}", sol_value);
 
-    let current_tvl = compute_tvl_sol(guard.state.total_lst_amount, guard.state.mock_lst_to_sol_rate)
-      .ok_or(LaminarError::MathOverflow)?;
+  let current_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
 
-    let current_liability = if guard.state.amusd_supply > 0 {
-      compute_liability_sol(guard.state.amusd_supply, guard.state.mock_sol_price_usd)
-        .ok_or(LaminarError::MathOverflow)?
-    } else {
-      0
-    };
+  let current_liability = if current_amusd_supply > 0 {
+    compute_liability_sol(current_amusd_supply, sol_price_used)
+      .ok_or(LaminarError::MathOverflow)?
+  } else {
+    0
+  };
 
-    current_nav = if guard.state.asol_supply == 0 {
-      SOL_PRECISION
-    } else {
-      nav_asol(current_tvl, current_liability, guard.state.asol_supply)
-        .ok_or(LaminarError::MathOverflow)?
-    };
+  let current_nav = if current_asol_supply == 0 {
+    SOL_PRECISION  // First mint: 1 aSOL = 1 SOL
+  } else {
+    nav_asol(current_tvl, current_liability, current_asol_supply)
+      .ok_or(LaminarError::MathOverflow)?
+  };
 
-    let asol_gross = if guard.state.asol_supply == 0 {
-      sol_value
-    } else {
-      if current_nav == 0 {
-        return Err(LaminarError::InsolventProtocol.into());
-      }
-      mul_div_down(sol_value, SOL_PRECISION, current_nav)
-        .ok_or(LaminarError::MathOverflow)?
-    };
-
-    msg!("aSOL gross (before fee): {}", asol_gross);
-
-    const BASE_FEE_BPS: u64 = 30;
-    let fee_result = apply_fee(asol_gross, BASE_FEE_BPS)
-      .ok_or(LaminarError::MathOverflow)?;
-
-    asol_net = fee_result.0;
-    fee = fee_result.1;
-
-    msg!("Fee: {} aSOL", fee);
-    msg!("aSOL net (to user): {}", asol_net);
-
-    require!(asol_net >= min_asol_out, LaminarError::SlippageExceeded);
-
-    new_lst_amount = guard.state.total_lst_amount
-      .checked_add(lst_amount)
-      .ok_or(LaminarError::MathOverflow)?;
-
-    new_tvl = compute_tvl_sol(new_lst_amount, guard.state.mock_lst_to_sol_rate)
-      .ok_or(LaminarError::MathOverflow)?;
-
-    new_asol_supply = guard.state.asol_supply
-      .checked_add(asol_gross)
-      .ok_or(LaminarError::MathOverflow)?;
-
-    let new_liability = current_liability;
-    new_equity = compute_equity_sol(new_tvl, new_liability);
-
-    let new_cr = if new_liability > 0 {
-      compute_cr_bps(new_tvl, new_liability)
-    } else {
-      u64::MAX
-    };
-
-    if new_liability > 0 {
-      msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
-    } else {
-      msg!("Post-mint CR: infinite (no debt exists)");
-    }
-
-    if new_liability > 0 && new_equity == 0 {
+  let asol_gross = if current_asol_supply == 0 {
+    sol_value
+  } else {
+    if current_nav == 0 {
       return Err(LaminarError::InsolventProtocol.into());
     }
+    mul_div_down(sol_value, SOL_PRECISION, current_nav)
+      .ok_or(LaminarError::MathOverflow)?
+  };
 
-    // INVARIANTS
-    assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+  msg!("aSOL gross (before fee): {}", asol_gross);
 
-  } // lock released
+  const BASE_FEE_BPS: u64 = 30;
+  let (asol_net, fee) = apply_fee(asol_gross, BASE_FEE_BPS)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  msg!("Fee: {} aSOL", fee);
+  msg!("aSOL net (to user): {}", asol_net);
+
+  require!(asol_net >= min_asol_out, LaminarError::SlippageExceeded);
+  require!(asol_net >= MIN_ASOL_MINT, LaminarError::AmountTooSmall);
+
+  // Calculate new state values
+  let new_lst_amount = current_lst_amount
+    .checked_add(lst_amount)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let new_tvl = compute_tvl_sol(new_lst_amount, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let new_asol_supply = current_asol_supply
+    .checked_add(asol_gross)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let new_liability = current_liability;  // aSOL mint doesn't change liability
+  let new_equity = compute_equity_sol(new_tvl, new_liability);
+
+  let leverage_multiple = if new_equity > 0 {
+    mul_div_down(new_tvl, 100, new_equity).unwrap_or(0)
+  } else {
+    0
+  };
+
+  // CR check (only if there's debt)
+  if new_liability > 0 {
+    let new_cr = compute_cr_bps(new_tvl, new_liability);
+    msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
+    assert_cr_above_minimum(new_cr, min_cr_bps)?;
+    
+    if new_equity == 0 {
+      return Err(LaminarError::InsolventProtocol.into());
+    }
+  } else {
+    msg!("Post-mint CR: infinite (no debt exists)");
+  }
+
+  // INVARIANTS
+  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+
+
+  // Update state BEFORE external calls
+
+
+  {
+    let global_state = &mut ctx.accounts.global_state;
+    global_state.total_lst_amount = new_lst_amount;
+    global_state.asol_supply = new_asol_supply;
+    global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+    msg!("State updated: LST={}, aSOL={}", new_lst_amount, new_asol_supply);
+  }
+
+  // External calls (CPIs)
 
   // Transfer LST from user to vault
   let transfer_accounts = TransferChecked {
@@ -156,28 +171,21 @@ pub fn handler(
   msg!("Minted {} aSOL to user", asol_net);
 
   // Mint fee to treasury
-  let mint_to_treasury = MintTo {
-    mint: ctx.accounts.asol_mint.to_account_info(),
-    to: ctx.accounts.treasury_asol_account.to_account_info(),
-    authority: ctx.accounts.global_state.to_account_info(),
-  };
+  if fee > 0 {
+    let mint_to_treasury = MintTo {
+      mint: ctx.accounts.asol_mint.to_account_info(),
+      to: ctx.accounts.treasury_asol_account.to_account_info(),
+      authority: ctx.accounts.global_state.to_account_info(),
+    };
 
-  let cpi_ctx_treasury = CpiContext::new_with_signer(
-    ctx.accounts.token_program.to_account_info(),
-    mint_to_treasury,
-    signer,
-  );
+    let cpi_ctx_treasury = CpiContext::new_with_signer(
+      ctx.accounts.token_program.to_account_info(),
+      mint_to_treasury,
+      signer,
+    );
 
-  token_interface::mint_to(cpi_ctx_treasury, fee)?;
-  msg!("Minted {} aSOL fee to treasury", fee);
-
-  {
-    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
-    guard.state.total_lst_amount = new_lst_amount;
-    guard.state.asol_supply = new_asol_supply;
-    guard.state.validate_version()?;
-    guard.state.operation_counter += 1;
-    msg!("Operation #{} complete", guard.state.operation_counter);
+    token_interface::mint_to(cpi_ctx_treasury, fee)?;
+    msg!("Minted {} aSOL fee to treasury", fee);
   }
 
   msg!("Mint complete!");
@@ -192,6 +200,8 @@ pub fn handler(
     nav: current_nav,
     new_tvl,
     new_equity,
+    leverage_multiple,
+    timestamp: ctx.accounts.clock.unix_timestamp,
   });
 
   Ok(())
@@ -235,7 +245,7 @@ pub struct MintAsol<'info> {
     payer = user,
     associated_token::mint = asol_mint,
     associated_token::authority = treasury,
-    constraint = treasury_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    // constraint = treasury_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -276,4 +286,10 @@ pub struct MintAsol<'info> {
   pub token_program: Interface<'info, TokenInterface>,
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
+
+  /// CHECK: Instruction introspection
+  #[account(address = IX_SYSVAR)]
+  pub instruction_sysvar: UncheckedAccount<'info>,
+
+  pub clock: Sysvar<'info, Clock>,
 }

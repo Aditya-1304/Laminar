@@ -4,6 +4,8 @@
 
 use anchor_lang::prelude::*;
 
+use crate::error::LaminarError;
+
 /// Assert that the balance sheet equation holds: TVL = Liability + Equity
 /// This is the foundational invariant of the entire protocol
 /// 
@@ -13,7 +15,7 @@ use anchor_lang::prelude::*;
 /// * `equity` - Total equity in lamports
 pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {  // lamports
   let total = liability.checked_add(equity)
-    .ok_or(ProtocolError::ArithmeticOverflow)?;
+    .ok_or(LaminarError::ArithmeticOverflow)?;
 
   let tolerance = tvl.saturating_mul(1) / 10_000;
   let max_tolerance = tolerance.max(10);
@@ -21,7 +23,7 @@ pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Resu
   let diff = tvl.abs_diff(total);
   require!(
     diff <= max_tolerance,
-    ProtocolError::BalanceSheetViolation
+    LaminarError::BalanceSheetViolation
   );
   Ok(())
 }
@@ -39,7 +41,7 @@ pub fn assert_cr_above_minimum(cr_bps: u64, min_cr_bps: u64) -> Result<()> {
   }
   require!(
     cr_bps >= min_cr_bps,
-    ProtocolError::CollateralRatioTooLow
+    LaminarError::CollateralRatioTooLow
   );
   Ok(())
 }
@@ -54,7 +56,7 @@ pub fn assert_cr_above_minimum(cr_bps: u64, min_cr_bps: u64) -> Result<()> {
 pub fn assert_no_negative_equity(tvl: u64, liability: u64) -> Result<()> {
   require!(
     tvl >= liability,
-    ProtocolError::NegativeEquity
+    LaminarError::NegativeEquity
   );
   Ok(())
 }
@@ -68,30 +70,14 @@ pub fn assert_no_negative_equity(tvl: u64, liability: u64) -> Result<()> {
 pub fn assert_supply_nonzero(supply: u64, action_name: &str) -> Result<()> {
   require!(
     supply > 0,
-    ProtocolError::ZeroSupply
+    LaminarError::ZeroSupply
   );
   msg!("Supply check passed for action: {}", action_name);
   Ok(())
 }
 
 /// Protocol specific error codes 
-#[error_code]
-pub enum ProtocolError {
-    #[msg("Balance sheet invariant violated: TVL != Liability + Equity")]
-    BalanceSheetViolation,
-    
-    #[msg("Collateral ratio below minimum threshold")]
-    CollateralRatioTooLow,
-    
-    #[msg("Negative equity detected: TVL < Liability")]
-    NegativeEquity,
-    
-    #[msg("Supply is zero - cannot perform this operation")]
-    ZeroSupply,
 
-    #[msg("Arithmetic overflow in invariant check")]
-    ArithmeticOverflow,
-}
 
 
 
