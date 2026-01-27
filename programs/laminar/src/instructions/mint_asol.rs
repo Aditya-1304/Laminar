@@ -11,6 +11,8 @@ use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
 
+pub const MAX_SLIPPAGE_BPS: u64 = 500; // 5% max slippage
+
 pub fn handler(
   ctx: Context<MintAsol>,
   lst_amount: u64,
@@ -36,6 +38,11 @@ pub fn handler(
   require!(!global_state.mint_paused, LaminarError::MintPaused);
   require!(lst_amount > 0, LaminarError::ZeroAmount);
   require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
+
+  require!(
+    ctx.accounts.user_lst_account.amount >= lst_amount,
+    LaminarError::InsufficientCollateral
+  );
 
   // All math logic
 
@@ -119,6 +126,7 @@ pub fn handler(
   }
 
   // INVARIANTS
+  assert_no_negative_equity(new_tvl, new_liability)?;
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
 
@@ -245,6 +253,7 @@ pub struct MintAsol<'info> {
     payer = user,
     associated_token::mint = asol_mint,
     associated_token::authority = treasury,
+    associated_token::token_program = token_program,
     // constraint = treasury_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,

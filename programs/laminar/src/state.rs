@@ -59,7 +59,7 @@ pub struct GlobalState {
   pub redeem_paused: bool,
 
   /// Reentrancy lock (solana CPI safety)
-  pub locked: bool,
+  // pub locked: bool,
 
   pub mock_sol_price_usd: u64,
 
@@ -85,7 +85,7 @@ impl GlobalState {
     8 + // target_cr_bps
     1 + // mint_paused
     1 + // redeem_paused
-    1 + // locked
+    // 1 + // locked
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
     16; // _reserved (2 * 8 = 16)
@@ -138,5 +138,47 @@ impl GlobalState {
       LaminarError::InvalidVersion
     );
     Ok(())
+  }
+}
+
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use anchor_lang::prelude::borsh;
+  
+  #[test]
+  fn test_global_state_size() {
+    // Create a default instance and serialize it to verify size
+    let state = GlobalState {
+      version: 0,
+      operation_counter: 0,
+      authority: Pubkey::default(),
+      amusd_mint: Pubkey::default(),
+      asol_mint: Pubkey::default(),
+      treasury: Pubkey::default(),
+      supported_lst_mint: Pubkey::default(),
+      total_lst_amount: 0,
+      amusd_supply: 0,
+      asol_supply: 0,
+      min_cr_bps: 0,
+      target_cr_bps: 0,
+      mint_paused: false,
+      redeem_paused: false,
+      mock_sol_price_usd: 0,
+      mock_lst_to_sol_rate: 0,
+      _reserved: [0; 2],
+    };
+    
+    // Verify the manual LEN calculation matches what Borsh would serialize
+    // The actual serialized size should be LEN - 8 (discriminator is added by Anchor)
+    let serialized = borsh::to_vec(&state).expect("Failed to serialize");
+    assert_eq!(
+      GlobalState::LEN,
+      8 + serialized.len(),
+      "GlobalState::LEN ({}) doesn't match 8 + serialized size (8 + {})",
+      GlobalState::LEN,
+      serialized.len()
+    );
   }
 }

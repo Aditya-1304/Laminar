@@ -1,6 +1,6 @@
 //! Mint amUSD instruction - creates stable debt
 //! User deposits LST collateral and receives amUSD at $1 NAV
-
+//! Fee is minted to treasury as amUSD (per whitepaper Section 16.5)
 
 use anchor_lang::prelude::program_option::COption;
 use anchor_lang::prelude::*;
@@ -13,12 +13,20 @@ use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
 
+/// Maximum allowed slippage in basis points (5%)
+pub const MAX_SLIPPAGE_BPS: u64 = 500;
+
+/// Base mint fee in basis points (0.5%)
+const BASE_FEE_BPS: u64 = 50;
+
 pub fn handler(
   ctx: Context<MintAmUSD>,
   lst_amount: u64, 
   min_amusd_out: u64,
 ) -> Result<()> {
-  // All validations before any state changes
+  // ============================================================
+  // PHASE 1: CHECKS - All validations before any state changes
+  // ============================================================
   
   // Prevent CPI attacks (instruction must be top-level)
   let ix_sysvar = &ctx.accounts.instruction_sysvar;
@@ -29,8 +37,8 @@ pub fn handler(
 
   let global_state = &ctx.accounts.global_state;
   
-  // Capture values for calculations
-  let sol_price_used = global_state.mock_sol_price_usd;
+  // Capture current state values for calculations
+  let sol_price_usd = global_state.mock_sol_price_usd;
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
@@ -41,30 +49,40 @@ pub fn handler(
   require!(lst_amount > 0, LaminarError::ZeroAmount);
   require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
-  // All math logic (pure calculations, no state changes)
+  require!(
+    ctx.accounts.user_lst_account.amount >= lst_amount,
+    LaminarError::InsufficientCollateral
+  );
+
+  // ============================================================
+  // PHASE 2: COMPUTE - All math logic (pure calculations)
+  // ============================================================
   
+  // Convert full LST deposit to SOL value
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
 
-  let amusd_gross = mul_div_down(sol_value, sol_price_used, SOL_PRECISION)
+  // Calculate gross amUSD based on full deposit
+  let amusd_gross = mul_div_down(sol_value, sol_price_usd, SOL_PRECISION)
     .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("amUSD gross (before fee): {}", amusd_gross);
-
-  const BASE_FEE_BPS: u64 = 50;
-  let (amusd_net, fee) = apply_fee(amusd_gross, BASE_FEE_BPS)
+  // Fee is taken in amUSD terms (per whitepaper: amUSD_net = amUSD_minted − fee)
+  let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, BASE_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
-  msg!("Fee: {} amUSD", fee);
-  msg!("amUSD net (to User): {}", amusd_net);
+  msg!("amUSD gross: {}", amusd_gross);
+  msg!("amUSD fee (to treasury): {}", amusd_fee);
+  msg!("amUSD to user: {}", amusd_to_user);
 
-  require!(amusd_net >= min_amusd_out, LaminarError::SlippageExceeded);
-  require!(amusd_net >= MIN_AMUSD_MINT, LaminarError::AmountTooSmall);
+  // Slippage protection (on user's portion)
+  require!(amusd_to_user >= min_amusd_out, LaminarError::SlippageExceeded);
+  require!(amusd_to_user >= MIN_AMUSD_MINT, LaminarError::AmountTooSmall);
 
   // Calculate new state values
+  // Full LST goes to vault
   let new_lst_amount = current_lst_amount
     .checked_add(lst_amount)
     .ok_or(LaminarError::MathOverflow)?;
@@ -72,11 +90,13 @@ pub fn handler(
   let new_tvl = compute_tvl_sol(new_lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
+  // Total amUSD supply increases by gross amount (user + fee)
+  // This is the total liability
   let new_amusd_supply = current_amusd_supply
     .checked_add(amusd_gross)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let new_liability = compute_liability_sol(new_amusd_supply, sol_price_used)
+  let new_liability = compute_liability_sol(new_amusd_supply, sol_price_usd)
     .ok_or(LaminarError::MathOverflow)?;
 
   let new_equity = compute_equity_sol(new_tvl, new_liability);
@@ -84,12 +104,16 @@ pub fn handler(
 
   msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
 
-  // INVARIANTS: Validate before committing (will error if violated)
+  // ============================================================
+  // INVARIANTS: Validate before committing
+  // ============================================================
+  assert_no_negative_equity(new_tvl, new_liability)?;
   assert_cr_above_minimum(new_cr, min_cr_bps)?;
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-  // Update state BEFORE external calls
-  
+  // ============================================================
+  // PHASE 3: EFFECTS - Update state BEFORE external calls
+  // ============================================================
   {
     let global_state = &mut ctx.accounts.global_state;
     global_state.total_lst_amount = new_lst_amount;
@@ -98,12 +122,11 @@ pub fn handler(
     msg!("State updated: LST={}, amUSD={}", new_lst_amount, new_amusd_supply);
   }
 
-
-  // External calls (CPIs)
-  // If any CPI fails, the entire transaction reverts including state changes
-
+  // ============================================================
+  // PHASE 4: INTERACTIONS - External calls (CPIs)
+  // ============================================================
   
-  // Transfer LST from user to vault
+  // Transfer full LST from user to vault
   let transfer_accounts = TransferChecked {
     from: ctx.accounts.user_lst_account.to_account_info(),
     mint: ctx.accounts.lst_mint.to_account_info(),
@@ -119,7 +142,7 @@ pub fn handler(
   token_interface::transfer_checked(cpi_ctx, lst_amount, ctx.accounts.lst_mint.decimals)?;
   msg!("Transferred {} LST to vault", lst_amount);
 
-  // Mint amUSD to user (net amount after fee)
+  // Mint amUSD to user
   let seeds = &[GLOBAL_STATE_SEED, &[ctx.bumps.global_state]];
   let signer = &[&seeds[..]];
 
@@ -135,11 +158,11 @@ pub fn handler(
     signer,
   );
 
-  token_interface::mint_to(cpi_ctx_user, amusd_net)?;
-  msg!("Minted {} amUSD to user", amusd_net);
+  token_interface::mint_to(cpi_ctx_user, amusd_to_user)?;
+  msg!("Minted {} amUSD to user", amusd_to_user);
 
-  // Mint fee to treasury
-  if fee > 0 {
+  // Mint amUSD fee to treasury (per whitepaper Section 16.5)
+  if amusd_fee > 0 {
     let mint_to_treasury = MintTo {
       mint: ctx.accounts.amusd_mint.to_account_info(),
       to: ctx.accounts.treasury_amusd_account.to_account_info(),
@@ -152,22 +175,22 @@ pub fn handler(
       signer,
     );
 
-    token_interface::mint_to(cpi_ctx_treasury, fee)?;
-    msg!("Minted {} amUSD fee to treasury", fee);
+    token_interface::mint_to(cpi_ctx_treasury, amusd_fee)?;
+    msg!("Minted {} amUSD fee to treasury", amusd_fee);
   }
 
   msg!("Mint complete!");
-  msg!("New LST amount: {} lamports", new_lst_amount);
-  msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
+  msg!("New TVL: {} lamports", new_tvl);
+  msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_to_user, amusd_fee);
 
   emit!(AmUSDMinted {
     user: ctx.accounts.user.key(),
     lst_deposited: lst_amount,
-    amusd_minted: amusd_net,
-    fee,
+    amusd_minted: amusd_to_user,
+    fee: amusd_fee,
     new_tvl,
     new_cr_bps: new_cr,
-    sol_price_used,
+    sol_price_used: sol_price_usd,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
 
@@ -193,7 +216,7 @@ pub struct MintAmUSD<'info> {
   /// amUSD mint
   #[account(
     mut,
-    constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) @ LaminarError::InvalidMintAuthority,
+    constraint = amusd_mint.mint_authority == COption::Some(global_state.key()) @ LaminarError::InvalidMintAuthority,
     constraint = amusd_mint.key() == global_state.amusd_mint @ LaminarError::InvalidMint,
     constraint = amusd_mint.freeze_authority == COption::Some(global_state.key()) @ LaminarError::InvalidFreezeAuthority,
   )]
@@ -204,7 +227,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = amusd_mint,
     token::authority = user,
-    constraint = user_amusd_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    constraint = user_amusd_account.close_authority == COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -214,7 +237,7 @@ pub struct MintAmUSD<'info> {
     payer = user,
     associated_token::mint = amusd_mint,
     associated_token::authority = treasury,
-    // constraint = treasury_amusd_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    associated_token::token_program = token_program,
   )]
   pub treasury_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -226,7 +249,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -235,7 +258,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
-    constraint = vault.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    constraint = vault.close_authority == COption::None @ LaminarError::InvalidAccountState,
   )]
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -256,7 +279,7 @@ pub struct MintAmUSD<'info> {
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
 
-  ///CHECK: Instruction introspection
+  /// CHECK: Instruction introspection
   #[account(address = IX_SYSVAR)]
   pub instruction_sysvar: UncheckedAccount<'info>,
 

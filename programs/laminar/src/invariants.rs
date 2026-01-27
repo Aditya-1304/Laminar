@@ -17,12 +17,11 @@ pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Resu
   let total = liability.checked_add(equity)
     .ok_or(LaminarError::ArithmeticOverflow)?;
 
-  let tolerance = tvl.saturating_mul(1) / 10_000;
-  let max_tolerance = tolerance.max(10);
+  const MAX_TOLERANCE: u64 = 1_000;
 
   let diff = tvl.abs_diff(total);
   require!(
-    diff <= max_tolerance,
+    diff <= MAX_TOLERANCE,
     LaminarError::BalanceSheetViolation
   );
   Ok(())

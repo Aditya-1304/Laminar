@@ -107,13 +107,14 @@ pub fn compute_cr_bps(tvl: u64, liability: u64) -> u64 {
 }
 
 /// Compute Net Asset Value (NAV) of amUSD in SOL terms
-/// amUSD is always worth $1, so NAV = 1 / SOL_price
+/// amUSD is always worth $1, so NAV = SOL_PRECISION / SOL_price
 /// 
 /// # Arguments 
-/// * `sol_price_usd` - SOL price in USD (with USD_PRECISION)
+/// * `sol_price_usd` - SOL price in USD (with USD_PRECISION, e.g., 100_000_000 = $100)
 /// 
 /// # Returns 
-/// NAV in lamports per amUSD unit (with USD_PRECISION)
+/// NAV in lamports per amUSD unit (1e6 amUSD = $1)
+/// Example: If SOL = $100, 1 amUSD (1e6 units) = 10_000_000 lamports (0.01 SOL)
 pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
   if sol_price_usd == 0 {
     return None;
@@ -123,7 +124,6 @@ pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
   // Since 1 USD = USD_PRECISION, we get: 
   mul_div_down(USD_PRECISION, SOL_PRECISION, sol_price_usd)
 }
-
 
 
 /// Compute Net Asset Value (NAV) of aSOL

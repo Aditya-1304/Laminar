@@ -16,6 +16,8 @@ declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 pub mod laminar {
     // use crate::reentrancy::ReentrancyGuard;
 
+    use crate::error::LaminarError;
+
     use super::*;
 
     pub fn initialize(
@@ -89,6 +91,65 @@ pub mod laminar {
         });
         Ok(())
     }
+
+    pub fn update_mock_prices(
+        ctx: Context<UpdateMockPrices>,
+        new_sol_price_usd: u64,
+        new_lst_to_sol_rate: u64,
+    ) -> Result<()> {
+        let global_state = &mut ctx.accounts.global_state;
+        
+        require!(new_sol_price_usd > 0, LaminarError::ZeroAmount);
+        require!(new_lst_to_sol_rate > 0, LaminarError::ZeroAmount);
+        
+        let old_sol_price = global_state.mock_sol_price_usd;
+        let old_lst_rate = global_state.mock_lst_to_sol_rate;
+        
+        global_state.mock_sol_price_usd = new_sol_price_usd;
+        global_state.mock_lst_to_sol_rate = new_lst_to_sol_rate;
+        global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+        
+        emit!(crate::events::OraclePriceUpdated {
+            authority: ctx.accounts.authority.key(),
+            old_sol_price,
+            new_sol_price: new_sol_price_usd,
+            old_lst_rate,
+            new_lst_rate: new_lst_to_sol_rate,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+        
+        Ok(())
+    }
+    
+    /// Update risk parameters (admin only)
+    pub fn update_parameters(
+        ctx: Context<UpdateParameters>,
+        new_min_cr_bps: u64,
+        new_target_cr_bps: u64,
+    ) -> Result<()> {
+        require!(new_min_cr_bps >= 10_000, LaminarError::InvalidParameter);
+        require!(new_target_cr_bps > new_min_cr_bps, LaminarError::InvalidParameter);
+        
+        let global_state = &mut ctx.accounts.global_state;
+        
+        let old_min = global_state.min_cr_bps;
+        let old_target = global_state.target_cr_bps;
+        
+        global_state.min_cr_bps = new_min_cr_bps;
+        global_state.target_cr_bps = new_target_cr_bps;
+        global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+        
+        emit!(crate::events::ParametersUpdated {
+            authority: ctx.accounts.authority.key(),
+            old_min_cr_bps: old_min,
+            new_min_cr_bps,
+            old_target_cr_bps: old_target,
+            new_target_cr_bps,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+        
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -106,3 +167,35 @@ pub struct EmergencyPause<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+
+#[derive(Accounts)]
+pub struct UpdateMockPrices<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = authority,
+        seeds = [b"global_state"],
+        bump
+    )]
+    pub global_state: Account<'info, state::GlobalState>,
+    
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateParameters<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = authority,
+        seeds = [b"global_state"],
+        bump
+    )]
+    pub global_state: Account<'info, state::GlobalState>,
+    
+    pub clock: Sysvar<'info, Clock>,
+}

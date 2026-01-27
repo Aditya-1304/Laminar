@@ -2,81 +2,81 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum LaminarError {
-  #[msg("Minting is currently paused")]
+  #[msg("Minting is currently paused by protocol administrator")]
   MintPaused,
   
-  #[msg("Redemptions are currently paused")]
+  #[msg("Redemptions are currently paused by protocol administrator")]
   RedeemPaused,
   
   #[msg("Amount must be greater than zero")]
   ZeroAmount,
   
-  #[msg("Math overflow occurred")]
+  #[msg("Math overflow occurred - values too large for safe computation")]
   MathOverflow,
   
-  #[msg("Insufficient collateral in vault")]
+  #[msg("Insufficient collateral in vault to complete this operation")]
   InsufficientCollateral,
   
-  #[msg("Insufficient supply to burn")]
+  #[msg("Insufficient token supply to burn - check your balance")]
   InsufficientSupply,
 
-  #[msg("LST mint not whitelisted - only supported_lst_mint is accepted")]
+  #[msg("LST mint not whitelisted - only the supported LST type is accepted as collateral")]
   UnsupportedLST,
 
-  #[msg("Protocol is insolvent - aSOL NAV is zero")]
+  #[msg("Protocol is insolvent - aSOL NAV is zero, equity redemptions are frozen")]
   InsolventProtocol,
 
-  #[msg("Slippage tolerance exceeded")]
+  #[msg("Slippage tolerance exceeded - actual output is below your minimum")]
   SlippageExceeded,  
   
-  #[msg("Reentrancy detected")]
+  #[msg("Reentrancy attack detected - operation blocked")]
   Reentrancy,
 
-  #[msg("Invalid mint authority - must be global_state PDA")]
+  #[msg("Invalid mint authority - mint must be controlled by global_state PDA")]
   InvalidMintAuthority,
 
-  #[msg("Invalid account state")]
+  #[msg("Invalid account state - unexpected account configuration")]
   InvalidAccountState,
 
-  #[msg("Amount too small - below minimum deposit threshold")]
+  #[msg("Amount too small - below minimum threshold of 0.0001 SOL equivalent")]
   AmountTooSmall,
 
-  #[msg("Invalid account owner - account does not belong to this program")]
+  #[msg("Invalid account owner - account is not owned by this program")]
   InvalidAccountOwner,
 
-  #[msg("LST mint must have 9 decimals (SOL standard)")]
+  #[msg("LST mint must have 9 decimals to match SOL precision")]
   InvalidDecimals,
 
-  #[msg("Invalid protocol version")]
+  #[msg("Invalid protocol version - state account needs migration")]
   InvalidVersion,
 
-  #[msg("Invalid CPI context - must be called directly")]
+  #[msg("Invalid CPI context - instruction must be called directly, not via CPI")]
   InvalidCPIContext,
 
-  #[msg("Invalid mint address")]
+  #[msg("Invalid mint address - does not match expected protocol mint")]
   InvalidMint,
 
-  #[msg("Invalid freeze authority")]
+  #[msg("Invalid freeze authority configuration")]
   InvalidFreezeAuthority,
 
-  #[msg("TVL would fall below minimum threshold")]
+  #[msg("Operation would reduce TVL below minimum protocol threshold")]
   BelowMinimumTVL,
 
-  #[msg("Balance sheet invariant violated: TVL != Liability + Equity")]
+  #[msg("Balance sheet invariant violated: TVL must equal Liability plus Equity")]
   BalanceSheetViolation,
   
-  #[msg("Collateral ratio below minimum threshold")]
+  #[msg("Collateral ratio would fall below minimum safety threshold")]
   CollateralRatioTooLow,
   
-  #[msg("Negative equity detected: TVL < Liability")]
+  #[msg("Negative equity detected - protocol is in distressed state")]
   NegativeEquity,
   
-  #[msg("Supply is zero - cannot perform this operation")]
+  #[msg("Cannot perform operation when supply is zero")]
   ZeroSupply,
 
-  #[msg("Arithmetic overflow in invariant check")]
+  #[msg("Arithmetic overflow in safety check computation")]
   ArithmeticOverflow,
 
-  #[msg("Invalid parameter value")]
+  #[msg("Invalid parameter value provided")]
   InvalidParameter,
 }

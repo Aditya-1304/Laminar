@@ -48,7 +48,7 @@ pub fn handler(
   global_state.mint_paused = false;
   global_state.redeem_paused = false;
 
-  global_state.locked = false;
+  // global_state.locked = false;
 
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
@@ -88,7 +88,7 @@ pub struct Initialize<'info> {
     seeds = [GLOBAL_STATE_SEED],
     bump
   )]
-  pub global_state: Account<'info, GlobalState>,
+  pub global_state: Box<Account<'info, GlobalState>>,
 
   /// amUSD token mint (senior tranche)
   #[account(
@@ -99,7 +99,7 @@ pub struct Initialize<'info> {
     mint::freeze_authority = global_state,
     mint::token_program = token_program
   )]
-  pub amusd_mint: InterfaceAccount<'info, Mint>,
+  pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// aSOL token mint (Junior tranche)
   #[account(
@@ -110,7 +110,7 @@ pub struct Initialize<'info> {
     mint::freeze_authority = global_state,
     mint::token_program = token_program,
   )]
-  pub asol_mint: InterfaceAccount<'info, Mint>,
+  pub asol_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// Collateral vault - holds LST tokens
   /// Deterministic ATA owned by vault_authority PDA
@@ -119,11 +119,12 @@ pub struct Initialize<'info> {
     payer = authority,
     associated_token::mint = lst_mint,
     associated_token::authority = vault_authority,
+    associated_token::token_program = token_program,
   )]
-  pub vault: InterfaceAccount<'info, TokenAccount>,
+  pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// The LST mint being used as collateral (e.g., JitoSOL, mSOL)
-  pub lst_mint: InterfaceAccount<'info, Mint>,
+  pub lst_mint: Box<InterfaceAccount<'info, Mint>>,
 
   /// CHECK: PDA will be validated by the seeds
   #[account(

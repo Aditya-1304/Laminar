@@ -97,6 +97,11 @@ pub fn handler(
     u64::MAX
   };
 
+  require!(
+    ctx.accounts.user_amusd_account.amount >= amusd_amount,
+    LaminarError::InsufficientSupply
+);
+
   // Verify vault has enough funds
   require!(
     ctx.accounts.vault.amount >= total_lst_out,
@@ -104,6 +109,7 @@ pub fn handler(
   );
 
   // Invariants check
+  assert_no_negative_equity(new_tvl, new_liability)?;
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
   // Update state BEFORE external calls
@@ -234,6 +240,7 @@ pub struct RedeemAmUSD<'info> {
     payer = user,
     associated_token::mint = lst_mint,
     associated_token::authority = treasury,
+    associated_token::token_program = token_program,
     // constraint = treasury_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,

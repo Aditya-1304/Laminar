@@ -20,7 +20,6 @@ pub fn handler(
 ) -> Result<()> {
   // All validations before any state changes
   
-
   let ix_sysvar = &ctx.accounts.instruction_sysvar;
   let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(&ix_sysvar.to_account_info())?;
   require!(current_index == 0, LaminarError::InvalidCPIContext);
@@ -104,9 +103,16 @@ pub fn handler(
   if new_liability > 0 {
     let new_cr = compute_cr_bps(new_tvl, new_liability);
     msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
+
+    assert_cr_above_minimum(new_cr, ctx.accounts.global_state.min_cr_bps)?;
   } else {
     msg!("No debt exists - CR check skipped");
   }
+
+  require!(
+    ctx.accounts.user_asol_account.amount >= asol_amount,
+    LaminarError::InsufficientSupply
+);
 
   // Verify vault has enough funds
   require!(
@@ -115,6 +121,7 @@ pub fn handler(
   );
 
   // Invariant checks
+  assert_no_negative_equity(new_tvl, new_liability)?;
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
   // Update state BEFORE external calls
@@ -243,6 +250,7 @@ pub struct RedeemAsol<'info> {
     payer = user,
     associated_token::mint = lst_mint,
     associated_token::authority = treasury,
+    associated_token::token_program = token_program,
     // constraint = treasury_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
