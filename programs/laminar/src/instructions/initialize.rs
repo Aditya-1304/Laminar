@@ -3,7 +3,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
-use crate::state::*;
+use crate::{error::LaminarError, state::*};
 // use crate::math::{SOL_PRECISION, USD_PRECISION};
 
 pub fn handler(
@@ -13,8 +13,16 @@ pub fn handler(
   mock_sol_price_usd: u64,
   mock_lst_to_sol_rate: u64,
 ) -> Result<()> {
+    // Validate LST decimals  
+    require!(
+    ctx.accounts.lst_mint.decimals == 9,
+    LaminarError::InvalidDecimals
+  );
+  
   let global_state = &mut ctx.accounts.global_state;
 
+  global_state.version = 1;
+  global_state.operation_counter = 0;
   global_state.authority = ctx.accounts.authority.key();
   global_state.amusd_mint = ctx.accounts.amusd_mint.key();
   global_state.asol_mint = ctx.accounts.asol_mint.key();
@@ -38,7 +46,7 @@ pub fn handler(
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
 
-  global_state._reserved = [0; 3];
+  global_state._reserved = [0; 2];
 
   msg!("Protocol initialized!");
   msg!("amUSD mint: {}", global_state.amusd_mint);

@@ -3,11 +3,19 @@
 
 use anchor_lang::prelude::*;
 
+use crate::error::LaminarError;
+
 /// Global protocol state - the single source of truth for the balance sheet and vault configuration
 /// This account is a singleton (only one exists per protocol deployment)
 
 #[account]
 pub struct GlobalState {
+  /// Protocol version for upgrades
+  pub version: u8,
+
+  /// Operation counter - increments on every state change (for debugging/tracing)
+  pub operation_counter: u64,
+
   /// Protocol Authority (Admin)
   pub authority: Pubkey,
 
@@ -57,11 +65,13 @@ pub struct GlobalState {
 
   pub mock_lst_to_sol_rate: u64,
 
-  pub _reserved: [u64; 3],
+  pub _reserved: [u64; 2],
 }
 
 impl GlobalState {
   pub const LEN: usize = 8 + // discrimanator
+    1 + // version
+    8 + // operation_counter
     32 + // authority
     32 + // amusd_mint
     32 + // asol_mint
@@ -77,7 +87,7 @@ impl GlobalState {
     1 + // locked
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
-    24; // _reserved (3 * 8 = 24)
+    16; // _reserved (3 * 2 = 16)
 }
 
 /// Collateral vault metadata - holds LST vault configuration
@@ -117,3 +127,15 @@ pub const GLOBAL_STATE_SEED: &[u8] = b"global_state";
 pub const VAULT_SEED: &[u8] = b"vault";
 
 pub const VAULT_AUTHORITY_SEED: &[u8] = b"vault_authority";
+
+pub const CURRENT_VERSION: u8 = 1;
+
+impl GlobalState {
+  pub fn validate_version(&self) -> Result<()> {
+    require!(
+      self.version == CURRENT_VERSION,
+      LaminarError::InvalidVersion
+    );
+    Ok(())
+  }
+}

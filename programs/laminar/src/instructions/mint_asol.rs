@@ -19,6 +19,7 @@ pub fn handler(
   min_asol_out: u64,
 ) -> Result<()> {
 
+
   let new_lst_amount: u64;
   let new_asol_supply: u64;
   let asol_net: u64;
@@ -174,6 +175,9 @@ pub fn handler(
     let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
     guard.state.total_lst_amount = new_lst_amount;
     guard.state.asol_supply = new_asol_supply;
+    guard.state.validate_version()?;
+    guard.state.operation_counter += 1;
+    msg!("Operation #{} complete", guard.state.operation_counter);
   }
 
   msg!("Mint complete!");
@@ -212,8 +216,7 @@ pub struct MintAsol<'info> {
   /// aSOL mint
   #[account(
     mut,
-    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) 
-      @ LaminarError::InvalidMintAuthority,
+    constraint = asol_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) @ LaminarError::InvalidMintAuthority,
   )]
   pub asol_mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -222,9 +225,7 @@ pub struct MintAsol<'info> {
     mut,
     token::mint = asol_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -234,9 +235,7 @@ pub struct MintAsol<'info> {
     payer = user,
     associated_token::mint = asol_mint,
     associated_token::authority = treasury,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = treasury_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -248,9 +247,7 @@ pub struct MintAsol<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -259,9 +256,7 @@ pub struct MintAsol<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = vault.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 

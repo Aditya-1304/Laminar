@@ -1,9 +1,11 @@
 //! Mint amUSD instruction - creates stable debt
 //! User deposits LST collateral and receives amUSD at $1 NAV
 
+use anchor_lang::prelude::program_option::COption;
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
+use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
 use crate::events::AmUSDMinted;
 use crate::reentrancy::ReentrancyGuard;
 use crate::state::*;
@@ -16,6 +18,13 @@ pub fn handler(
   lst_amount: u64, 
   min_amusd_out: u64,
 ) -> Result<()> {
+  // Prevent CPI loops (Mango Markets pattern)
+  let ix_sysvar = &ctx.accounts.instruction_sysvar;
+  let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(
+    &ix_sysvar.to_account_info()
+  )?;
+  
+  require!(current_index == 0, LaminarError::InvalidCPIContext);
 
   let new_lst_amount: u64;
   let new_amusd_supply: u64;
@@ -137,6 +146,9 @@ pub fn handler(
     let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
     guard.state.total_lst_amount = new_lst_amount;
     guard.state.amusd_supply = new_amusd_supply;
+    guard.state.validate_version()?;
+    guard.state.operation_counter += 1;
+    msg!("Operation #{} complete", guard.state.operation_counter);
   }
 
   msg!("Mint complete!");
@@ -174,8 +186,9 @@ pub struct MintAmUSD<'info> {
   /// amUSD mint
   #[account(
     mut,
-    constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) 
-      @ LaminarError::InvalidMintAuthority,
+    constraint = amusd_mint.mint_authority == anchor_lang::solana_program::program_option::COption::Some(global_state.key()) @ LaminarError::InvalidMintAuthority,
+    constraint = amusd_mint.key() == global_state.amusd_mint @ LaminarError::InvalidMint,
+    constraint = amusd_mint.freeze_authority == COption::Some(global_state.key()) @ LaminarError::InvalidFreezeAuthority,
   )]
   pub amusd_mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -184,9 +197,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = amusd_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -196,9 +207,7 @@ pub struct MintAmUSD<'info> {
     payer = user,
     associated_token::mint = amusd_mint,
     associated_token::authority = treasury,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -210,9 +219,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -221,9 +228,7 @@ pub struct MintAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -243,4 +248,8 @@ pub struct MintAmUSD<'info> {
   pub token_program: Interface<'info, TokenInterface>,
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
+
+  ///CHECK: Instruction introspection
+  #[account(address = IX_SYSVAR)]
+  pub instruction_sysvar: UncheckedAccount<'info>,
 }

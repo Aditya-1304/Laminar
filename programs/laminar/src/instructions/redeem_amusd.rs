@@ -62,6 +62,13 @@ pub fn handler(
       .checked_sub(total_lst_out)
       .ok_or(LaminarError::InsufficientCollateral)?;
 
+    const MIN_PROTOCOL_TVL: u64 = 1_000_000; // 0.001 SOL
+
+    require!(
+      new_lst_amount >= MIN_PROTOCOL_TVL || new_lst_amount == 0,
+      LaminarError::BelowMinimumTVL
+    );
+
     new_tvl = compute_tvl_sol(new_lst_amount, guard.state.mock_lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
@@ -155,6 +162,9 @@ pub fn handler(
     let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
     guard.state.total_lst_amount = new_lst_amount;
     guard.state.amusd_supply = new_amusd_supply;
+    guard.state.validate_version()?;
+    guard.state.operation_counter += 1;
+    msg!("Operation #{} complete", guard.state.operation_counter);
   }
 
   msg!("Redeem complete!");
@@ -201,9 +211,7 @@ pub struct RedeemAmUSD<'info> {
     mut,
     token::mint = amusd_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_amusd_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_amusd_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -216,9 +224,7 @@ pub struct RedeemAmUSD<'info> {
     payer = user,
     associated_token::mint = lst_mint,
     associated_token::authority = treasury,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = treasury_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub treasury_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -227,9 +233,7 @@ pub struct RedeemAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = user,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = user_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub user_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -238,9 +242,7 @@ pub struct RedeemAmUSD<'info> {
     mut,
     token::mint = lst_mint,
     token::authority = vault_authority,
-    constraint = user_lst_account.close_authority == 
-      anchor_lang::solana_program::program_option::COption::None 
-      @ LaminarError::InvalidAccountState,
+    constraint = vault.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
   pub vault: Box<InterfaceAccount<'info, TokenAccount>>,
 

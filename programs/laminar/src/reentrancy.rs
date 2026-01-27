@@ -63,6 +63,8 @@ mod tests {
 
   fn mock_state() -> GlobalState {
     GlobalState {
+      version: 1,
+      operation_counter: 0,
       authority: Pubkey::default(),
       amusd_mint: Pubkey::default(),
       asol_mint: Pubkey::default(),
@@ -78,7 +80,7 @@ mod tests {
       locked: false,
       mock_sol_price_usd: 100_000_000,
       mock_lst_to_sol_rate: 1_000_000_000,
-      _reserved: [0; 3],
+      _reserved: [0; 2],
     }
   }
     

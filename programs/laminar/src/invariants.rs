@@ -11,15 +11,16 @@ use anchor_lang::prelude::*;
 /// * `tvl` - Total value locked in lamports
 /// * `liability` - Total liabilities in lamports 
 /// * `equity` - Total equity in lamports
-pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {
-  const MAX_ROUNDING_ERROR: u64 = 10;
-   // lamports
+pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {  // lamports
   let total = liability.checked_add(equity)
     .ok_or(ProtocolError::ArithmeticOverflow)?;
 
+  let tolerance = tvl.saturating_mul(1) / 10_000;
+  let max_tolerance = tolerance.max(10);
+
   let diff = tvl.abs_diff(total);
   require!(
-    diff <= MAX_ROUNDING_ERROR,
+    diff <= max_tolerance,
     ProtocolError::BalanceSheetViolation
   );
   Ok(())

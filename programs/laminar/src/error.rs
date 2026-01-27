@@ -43,4 +43,22 @@ pub enum LaminarError {
 
   #[msg("Invalid account owner - account does not belong to this program")]
   InvalidAccountOwner,
+
+  #[msg("LST mint must have 9 decimals (SOL standard)")]
+  InvalidDecimals,
+
+  #[msg("Invalid protocol version")]
+  InvalidVersion,
+
+  #[msg("Invalid CPI context - must be called directly")]
+  InvalidCPIContext,
+
+  #[msg("Invalid mint address")]
+  InvalidMint,
+
+  #[msg("Invalid freeze authority")]
+  InvalidFreezeAuthority,
+
+  #[msg("TVL would fall below minimum threshold")]
+  BelowMinimumTVL,
 }
