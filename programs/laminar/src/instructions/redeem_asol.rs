@@ -105,10 +105,6 @@ pub fn handler(
     // Invariant checks
     assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-    // Update state atomically
-    guard.state.total_lst_amount = new_lst_amount;
-    guard.state.asol_supply = new_asol_supply;
-
   } // release lock
 
 
@@ -166,6 +162,12 @@ pub fn handler(
     msg!("Transferred {} LST fee to treasury", lst_fee);
   }
 
+  {
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.asol_supply = new_asol_supply;
+  }
+
   msg!("Redeem complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {}", new_asol_supply);
@@ -195,6 +197,7 @@ pub struct RedeemAsol<'info> {
     bump,
     has_one = asol_mint,
     has_one = treasury,
+    constraint = global_state.to_account_info().owner == &crate::ID @ LaminarError::InvalidAccountOwner,
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 

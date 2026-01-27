@@ -36,5 +36,11 @@ pub enum LaminarError {
   InvalidMintAuthority,
 
   #[msg("Invalid account state")]
-  InvalidAccountState
+  InvalidAccountState,
+
+  #[msg("Amount too small - below minimum deposit threshold")]
+  AmountTooSmall,
+
+  #[msg("Invalid account owner - account does not belong to this program")]
+  InvalidAccountOwner,
 }

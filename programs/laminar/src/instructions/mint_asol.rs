@@ -29,11 +29,12 @@ pub fn handler(
 
   {
     // LOCK ACQUIRED
-    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
 
     // CHECK: Validations
     require!(!guard.state.mint_paused, LaminarError::MintPaused);
     require!(lst_amount > 0, LaminarError::ZeroAmount);
+    require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
     // COMPUTE: All math logic
     let sol_value = compute_tvl_sol(lst_amount, guard.state.mock_lst_to_sol_rate)
@@ -116,10 +117,6 @@ pub fn handler(
     // INVARIANTS
     assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-    // EFFECT: Update state atomically
-    guard.state.total_lst_amount = new_lst_amount;
-    guard.state.asol_supply = new_asol_supply;
-
   } // lock released
 
   // Transfer LST from user to vault
@@ -173,6 +170,12 @@ pub fn handler(
   token_interface::mint_to(cpi_ctx_treasury, fee)?;
   msg!("Minted {} aSOL fee to treasury", fee);
 
+  {
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.asol_supply = new_asol_supply;
+  }
+
   msg!("Mint complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {} (user {} + treasury {})", new_asol_supply, asol_net, fee);
@@ -202,6 +205,7 @@ pub struct MintAsol<'info> {
     bump,
     has_one = asol_mint,
     has_one = treasury,
+    constraint = global_state.to_account_info().owner == &crate::ID @ LaminarError::InvalidAccountOwner,
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 

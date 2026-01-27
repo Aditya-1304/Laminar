@@ -26,11 +26,12 @@ pub fn handler(
 
   {
     // LOCK ACQUIRED
-    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
     
     // CHECK: Validations
     require!(!guard.state.mint_paused, LaminarError::MintPaused);
     require!(lst_amount > 0, LaminarError::ZeroAmount);
+    require!(lst_amount >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
     // COMPUTE: All math logic
     let sol_value = compute_tvl_sol(lst_amount, guard.state.mock_lst_to_sol_rate)
@@ -78,10 +79,6 @@ pub fn handler(
     // INVARIANTS: Check before committing
     assert_cr_above_minimum(new_cr, guard.state.min_cr_bps)?;
     assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
-
-    // EFFECT: Update state atomically
-    guard.state.total_lst_amount = new_lst_amount;
-    guard.state.amusd_supply = new_amusd_supply;
 
   } 
   
@@ -136,6 +133,12 @@ pub fn handler(
   token_interface::mint_to(cpi_ctx_treasury, fee)?;
   msg!("Minted {} amUSD fee to treasury", fee);
 
+  {
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.amusd_supply = new_amusd_supply;
+  }
+
   msg!("Mint complete!");
   msg!("New LST amount: {} lamports", new_lst_amount);
   msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_net, fee);
@@ -164,6 +167,7 @@ pub struct MintAmUSD<'info> {
     bump,
     has_one = amusd_mint,
     has_one = treasury,
+    constraint = global_state.to_account_info().owner == &crate::ID @ LaminarError::InvalidAccountOwner,
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 

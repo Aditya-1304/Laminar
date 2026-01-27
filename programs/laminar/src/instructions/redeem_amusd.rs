@@ -26,7 +26,7 @@ pub fn handler(
 
   {
     // lock acquired
-    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    let guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
 
     // Validations
     require!(!guard.state.redeem_paused, LaminarError::RedeemPaused);
@@ -95,10 +95,6 @@ pub fn handler(
     // Invariants check
     assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-    // Update state atomically
-    guard.state.total_lst_amount = new_lst_amount;
-    guard.state.amusd_supply = new_amusd_supply;
-
   } // lock released
 
   // Burn amUSD from user
@@ -155,6 +151,12 @@ pub fn handler(
     msg!("Transferred {} LST fee to treasury", lst_fee);
   }
 
+  {
+    let mut guard = ReentrancyGuard::new(&mut ctx.accounts.global_state)?;
+    guard.state.total_lst_amount = new_lst_amount;
+    guard.state.amusd_supply = new_amusd_supply;
+  }
+
   msg!("Redeem complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New amUSD supply: {}", new_amusd_supply);
@@ -183,6 +185,7 @@ pub struct RedeemAmUSD<'info> {
     bump,
     has_one = amusd_mint,
     has_one = treasury,
+    constraint = global_state.to_account_info().owner == &crate::ID @ LaminarError::InvalidAccountOwner,
   )]
   pub global_state: Box<Account<'info, GlobalState>>,
 

@@ -8,6 +8,9 @@
 pub const SOL_PRECISION: u64 = 1_000_000_000;
 pub const USD_PRECISION: u64 = 1_000_000;
 pub const BPS_PRECISION: u64 = 10_000; // 1e4 basis points (100% = 10000 bps)
+pub const MIN_LST_DEPOSIT: u64 = 100_000; // 0.0001 SOL (100k lamports)
+pub const MIN_AMUSD_MINT: u64 = 1_000; // 0.001 USD (1k micro-USD)
+pub const MIN_ASOL_MINT: u64 = 1_000_000; // 0.001 SOL (1M lamports)
 
 
 /// Multiply two u64 values and divide by a third, rounding up
