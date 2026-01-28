@@ -8,10 +8,11 @@ use anchor_spl::{
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
 use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
-use crate::{events::AsolRedeemed, state::*};
+use crate::{constants::{ASOL_REDEEM_FEE_BPS, MIN_PROTOCOL_TVL}, events::AsolRedeemed, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+
 
 pub fn handler(
   ctx: Context<RedeemAsol>,
@@ -25,6 +26,7 @@ pub fn handler(
   require!(current_index == 0, LaminarError::InvalidCPIContext);
 
   let global_state = &ctx.accounts.global_state;
+  global_state.validate_version()?;
   
   // Capture values
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
@@ -36,13 +38,16 @@ pub fn handler(
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(asol_amount > 0, LaminarError::ZeroAmount);
+  require!(min_lst_out > 0, LaminarError::ZeroAmount);
 
   msg!("aSOL to redeem: {}", asol_amount);
 
   // All math logic
 
-  let current_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
+  let old_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+
+  // let current_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
+  //   .ok_or(LaminarError::MathOverflow)?;
 
   let current_liability = if current_amusd_supply > 0 {
     compute_liability_sol(current_amusd_supply, sol_price_used)
@@ -51,9 +56,15 @@ pub fn handler(
     0
   };
 
-  let current_nav = match nav_asol(current_tvl, current_liability, current_asol_supply) {
-    Some(nav) if nav > 0 => nav,
-    _ => return Err(LaminarError::InsolventProtocol.into()),
+  let old_equity = compute_equity_sol(old_tvl, current_liability);
+
+  let current_nav = match nav_asol(old_tvl, current_liability, current_asol_supply) {
+    Some(nav) if nav >= MIN_NAV_LAMPORTS => nav,
+    Some(nav) if nav > 0 && nav < MIN_NAV_LAMPORTS => {
+      msg!("NAV too low for safe redemption: {} lamports", nav);
+      return Err(LaminarError::InsolventProtocol.into());
+    },
+    _=> return Err(LaminarError::InsolventProtocol.into()),
   };
 
   msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
@@ -66,8 +77,7 @@ pub fn handler(
   let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  const REDEEM_FEE_BPS: u64 = 15;
-  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
+  let (lst_net, lst_fee) = apply_fee(lst_gross, ASOL_REDEEM_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST gross: {}", lst_gross);
@@ -83,7 +93,6 @@ pub fn handler(
     .checked_sub(total_lst_out)
     .ok_or(LaminarError::InsufficientCollateral)?;
 
-  const MIN_PROTOCOL_TVL: u64 = 1_000_000; // 0.001 SOL
 
   require!(
     new_lst_amount >= MIN_PROTOCOL_TVL || new_lst_amount == 0,
@@ -191,6 +200,20 @@ pub fn handler(
     msg!("Transferred {} LST fee to treasury", lst_fee);
   }
 
+  ctx.accounts.asol_mint.reload()?;
+  ctx.accounts.vault.reload()?;
+
+  let expected_vault_balance = ctx.accounts.global_state.total_lst_amount;
+  require!(
+    ctx.accounts.vault.amount == expected_vault_balance,
+    LaminarError::BalanceSheetViolation
+  );
+
+  require!(
+    ctx.accounts.asol_mint.supply == ctx.accounts.global_state.asol_supply,
+    LaminarError::BalanceSheetViolation
+  );
+
   msg!("Redeem complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {}", new_asol_supply);
@@ -201,7 +224,9 @@ pub fn handler(
     lst_received: lst_net,
     fee: lst_fee,
     nav: current_nav,
+    old_tvl,
     new_tvl,
+    old_equity,
     new_equity,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });

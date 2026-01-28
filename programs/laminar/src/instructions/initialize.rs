@@ -29,6 +29,7 @@ pub fn handler(
   let global_state = &mut ctx.accounts.global_state;
 
   global_state.version = 1;
+  global_state.bump = ctx.bumps.global_state;
   global_state.operation_counter = 0;
   global_state.authority = ctx.accounts.authority.key();
   global_state.amusd_mint = ctx.accounts.amusd_mint.key();

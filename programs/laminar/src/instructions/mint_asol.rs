@@ -6,12 +6,11 @@ use anchor_spl::{
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo}
 };
 use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
-use crate::{events::AsolMinted, state::*};
+use crate::{constants::ASOL_MINT_FEE_BPS, events::AsolMinted, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
 
-pub const MAX_SLIPPAGE_BPS: u64 = 500; // 5% max slippage
 
 pub fn handler(
   ctx: Context<MintAsol>,
@@ -25,6 +24,8 @@ pub fn handler(
   require!(current_index == 0, LaminarError::InvalidCPIContext);
 
   let global_state = &ctx.accounts.global_state;
+
+  global_state.validate_version()?;
   
   // Capture values
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
@@ -46,6 +47,17 @@ pub fn handler(
 
   // All math logic
 
+  let old_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+
+  let current_liability = if current_amusd_supply > 0 {
+    compute_liability_sol(current_amusd_supply, sol_price_used)
+      .ok_or(LaminarError::MathOverflow)?
+  } else {
+    0
+  };
+
+  let old_equity = compute_equity_sol(old_tvl, current_liability);
+
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
@@ -55,12 +67,6 @@ pub fn handler(
   let current_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let current_liability = if current_amusd_supply > 0 {
-    compute_liability_sol(current_amusd_supply, sol_price_used)
-      .ok_or(LaminarError::MathOverflow)?
-  } else {
-    0
-  };
 
   let current_nav = if current_asol_supply == 0 {
     SOL_PRECISION  // First mint: 1 aSOL = 1 SOL
@@ -69,6 +75,7 @@ pub fn handler(
       .ok_or(LaminarError::MathOverflow)?
   };
 
+  // Calculate aSOL to mint
   let asol_gross = if current_asol_supply == 0 {
     sol_value
   } else {
@@ -81,8 +88,8 @@ pub fn handler(
 
   msg!("aSOL gross (before fee): {}", asol_gross);
 
-  const BASE_FEE_BPS: u64 = 30;
-  let (asol_net, fee) = apply_fee(asol_gross, BASE_FEE_BPS)
+  // Apply fee
+  let (asol_net, fee) = apply_fee(asol_gross, ASOL_MINT_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("Fee: {} aSOL", fee);
@@ -131,7 +138,6 @@ pub fn handler(
 
 
   // Update state BEFORE external calls
-
 
   {
     let global_state = &mut ctx.accounts.global_state;
@@ -196,9 +202,24 @@ pub fn handler(
     msg!("Minted {} aSOL fee to treasury", fee);
   }
 
+  ctx.accounts.vault.reload()?;
+  ctx.accounts.asol_mint.reload()?;
+
+  let expected_vault_balance = ctx.accounts.global_state.total_lst_amount;
+  require!(
+    ctx.accounts.vault.amount == expected_vault_balance,
+    LaminarError::BalanceSheetViolation
+  );
+
+  require!(
+    ctx.accounts.asol_mint.supply == ctx.accounts.global_state.asol_supply,
+    LaminarError::BalanceSheetViolation
+  );
+
   msg!("Mint complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New aSOL supply: {} (user {} + treasury {})", new_asol_supply, asol_net, fee);
+  
 
   emit!(AsolMinted {
     user: ctx.accounts.user.key(),
@@ -206,11 +227,14 @@ pub fn handler(
     asol_minted: asol_net,
     fee,
     nav: current_nav,
+    old_tvl,
     new_tvl,
+    old_equity,
     new_equity,
     leverage_multiple,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
+
 
   Ok(())
 }

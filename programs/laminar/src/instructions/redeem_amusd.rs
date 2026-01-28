@@ -6,7 +6,7 @@ use anchor_spl::{
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
 use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
-use crate::{events::AmUSDRedeemed, state::*};
+use crate::{constants::{MIN_PROTOCOL_TVL, AMUSD_REDEEM_FEE_BPS}, events::AmUSDRedeemed, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
@@ -18,14 +18,14 @@ pub fn handler(
 ) -> Result<()> {
   
   // All validations before any state changes
-  
 
   let ix_sysvar = &ctx.accounts.instruction_sysvar;
   let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(&ix_sysvar.to_account_info())?;
   require!(current_index == 0, LaminarError::InvalidCPIContext);
 
   let global_state = &ctx.accounts.global_state;
-  
+  global_state.validate_version()?;
+
   // Capture values
   let sol_price_used = global_state.mock_sol_price_usd;
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
@@ -35,11 +35,21 @@ pub fn handler(
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(amusd_amount > 0, LaminarError::ZeroAmount);
+  require!(min_lst_out > 0, LaminarError::ZeroAmount);
 
   msg!("amUSD to redeem: {}", amusd_amount);
 
   // All math logic
-  
+  let old_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
+
+  let old_liability = if current_amusd_supply > 0 {
+    compute_liability_sol(current_amusd_supply, sol_price_used).ok_or(LaminarError::MathOverflow)?
+  } else {
+    0
+  };
+
+  let old_cr_bps = compute_cr_bps(old_tvl, old_liability);
+
   let sol_value_gross = mul_div_down(amusd_amount, SOL_PRECISION, sol_price_used)
     .ok_or(LaminarError::MathOverflow)?;
 
@@ -48,8 +58,7 @@ pub fn handler(
   let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  const REDEEM_FEE_BPS: u64 = 25;
-  let (lst_net, lst_fee) = apply_fee(lst_gross, REDEEM_FEE_BPS)
+  let (lst_net, lst_fee) = apply_fee(lst_gross, AMUSD_REDEEM_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST gross: {}", lst_gross);
@@ -64,8 +73,6 @@ pub fn handler(
   let new_lst_amount = current_lst_amount
     .checked_sub(total_lst_out)
     .ok_or(LaminarError::InsufficientCollateral)?;
-
-  const MIN_PROTOCOL_TVL: u64 = 1_000_000; // 0.001 SOL
 
   require!(
     new_lst_amount >= MIN_PROTOCOL_TVL || new_lst_amount == 0,
@@ -88,6 +95,10 @@ pub fn handler(
 
   let new_equity = compute_equity_sol(new_tvl, new_liability);
 
+  // NOTE: No CR minimum check here because amUSD redemption mathematically
+  // ALWAYS improves CR (liability decreases proportionally with TVL).
+  // Per whitepaper Section 17.4: "When CR < 150%, redemption fee decreases"
+  // to ENCOURAGE debt repayment during stress - not block it.
   let new_cr = if new_amusd_supply > 0 {
     let cr = compute_cr_bps(new_tvl, new_liability);
     msg!("Post-redeem CR: {}bps ({}%)", cr, cr / 100);
@@ -100,7 +111,7 @@ pub fn handler(
   require!(
     ctx.accounts.user_amusd_account.amount >= amusd_amount,
     LaminarError::InsufficientSupply
-);
+  );
 
   // Verify vault has enough funds
   require!(
@@ -180,6 +191,20 @@ pub fn handler(
     token_interface::transfer_checked(cpi_ctx_treasury, lst_fee, ctx.accounts.lst_mint.decimals)?;
     msg!("Transferred {} LST fee to treasury", lst_fee);
   }
+  
+  ctx.accounts.vault.reload()?;
+  ctx.accounts.amusd_mint.reload()?;
+
+  let expected_vault_balance = ctx.accounts.global_state.total_lst_amount;
+  require!(
+    ctx.accounts.vault.amount == expected_vault_balance,
+    LaminarError::BalanceSheetViolation
+  );
+
+  require!(
+    ctx.accounts.amusd_mint.supply == ctx.accounts.global_state.amusd_supply,
+    LaminarError::BalanceSheetViolation
+  );
 
   msg!("Redeem complete!");
   msg!("New TVL: {} lamports", new_tvl);
@@ -190,11 +215,14 @@ pub fn handler(
     amusd_burned: amusd_amount,
     lst_received: lst_net,
     fee: lst_fee,
+    old_tvl,
     new_tvl,
+    old_cr_bps,
     new_cr_bps: new_cr,
     sol_price_used,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
+
 
   Ok(())
 }

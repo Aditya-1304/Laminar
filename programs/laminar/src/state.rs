@@ -9,9 +9,13 @@ use crate::error::LaminarError;
 /// This account is a singleton (only one exists per protocol deployment)
 
 #[account]
+#[repr(C)]
 pub struct GlobalState {
   /// Protocol version for upgrades
   pub version: u8,
+
+  /// Bump seed for this PDA
+  pub bump: u8,
 
   /// Operation counter - increments on every state change (for debugging/tracing)
   pub operation_counter: u64,
@@ -72,6 +76,7 @@ pub struct GlobalState {
 impl GlobalState {
   pub const LEN: usize = 8 + // discrimanator
     1 + // version
+    1 + // bump
     8 + // operation_counter
     32 + // authority
     32 + // amusd_mint
@@ -101,6 +106,7 @@ impl GlobalState {
 /// One vault account will exist per whitelisted LST type.
 
 #[account]
+#[repr(C)]
 pub struct CollateralVault {
   /// LST mint that this vault holds
   pub lst_mint: Pubkey,
@@ -152,6 +158,7 @@ mod tests {
     // Create a default instance and serialize it to verify size
     let state = GlobalState {
       version: 0,
+      bump: 0,
       operation_counter: 0,
       authority: Pubkey::default(),
       amusd_mint: Pubkey::default(),

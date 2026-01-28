@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 
 #[error_code]
+#[derive(PartialEq,Eq)]
 pub enum LaminarError {
   #[msg("Minting is currently paused by protocol administrator")]
   MintPaused,
@@ -11,7 +12,7 @@ pub enum LaminarError {
   #[msg("Amount must be greater than zero")]
   ZeroAmount,
   
-  #[msg("Math overflow occurred - values too large for safe computation")]
+  #[msg("Math overflow occurred - values exceeded u64 bounds")]
   MathOverflow,
   
   #[msg("Insufficient collateral in vault to complete this operation")]

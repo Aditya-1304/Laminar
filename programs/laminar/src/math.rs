@@ -5,17 +5,21 @@
 
 // use anchor_lang::prelude::*;
 
-pub const SOL_PRECISION: u64 = 1_000_000_000;
-pub const USD_PRECISION: u64 = 1_000_000;
-pub const BPS_PRECISION: u64 = 10_000; // 1e4 basis points (100% = 10000 bps)
-pub const MIN_LST_DEPOSIT: u64 = 100_000; // 0.0001 SOL (100k lamports)
-pub const MIN_AMUSD_MINT: u64 = 1_000; // 0.001 USD (1k micro-USD)
-pub const MIN_ASOL_MINT: u64 = 1_000_000; // 0.001 SOL (1M lamports)
+pub use crate::constants::{
+    SOL_PRECISION,
+    USD_PRECISION,
+    BPS_PRECISION,
+    MIN_LST_DEPOSIT,
+    MIN_AMUSD_MINT,
+    MIN_ASOL_MINT,
+    MIN_NAV_LAMPORTS,
+};
 
 
 /// Multiply two u64 values and divide by a third, rounding up
 /// Used for conservative calculations that favor protocol solvency
 /// Returns None in overflow
+#[inline]
 pub fn mul_div_up(a: u64, b: u64, c: u64) -> Option<u64> {
   if c == 0 {
     return None;
@@ -32,6 +36,7 @@ pub fn mul_div_up(a: u64, b: u64, c: u64) -> Option<u64> {
 /// Multiply two u64 values and divide by a third, rounding DOWN
 /// Used for conservative calculations that favor protocol solvency 
 /// Returns None on Overflow
+#[inline]
 pub fn mul_div_down(a: u64, b: u64, c: u64) -> Option<u64> {
   if c == 0 {
     return None;
@@ -52,6 +57,7 @@ pub fn mul_div_down(a: u64, b: u64, c: u64) -> Option<u64> {
 /// 
 /// # Returns
 /// TVL in lamports (SOL base units)
+#[inline]
 pub fn compute_tvl_sol(collateral_lamports: u64, lst_to_sol_rate: u64) -> Option<u64> {
   mul_div_down(collateral_lamports, lst_to_sol_rate, SOL_PRECISION)
 }

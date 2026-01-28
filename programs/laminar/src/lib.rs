@@ -6,9 +6,12 @@ pub mod state;
 pub mod instructions;
 pub mod error;
 pub mod events;
+pub mod constants;
 // pub mod reentrancy;
 
 use instructions::*;
+
+use crate::state::GLOBAL_STATE_SEED;
 
 declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 
@@ -160,7 +163,7 @@ pub struct EmergencyPause<'info> {
     #[account(
         mut,
         has_one = authority,
-        seeds = [b"global_state"],
+        seeds = [GLOBAL_STATE_SEED],
         bump
     )]
     pub global_state: Account<'info, state::GlobalState>,
@@ -176,7 +179,7 @@ pub struct UpdateMockPrices<'info> {
     #[account(
         mut,
         has_one = authority,
-        seeds = [b"global_state"],
+        seeds = [GLOBAL_STATE_SEED],
         bump
     )]
     pub global_state: Account<'info, state::GlobalState>,
@@ -192,7 +195,7 @@ pub struct UpdateParameters<'info> {
     #[account(
         mut,
         has_one = authority,
-        seeds = [b"global_state"],
+        seeds = [GLOBAL_STATE_SEED],
         bump
     )]
     pub global_state: Account<'info, state::GlobalState>,

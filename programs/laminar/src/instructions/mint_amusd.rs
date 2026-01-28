@@ -7,26 +7,20 @@ use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
 use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
+use crate::constants::AMUSD_MINT_FEE_BPS;
 use crate::events::AmUSDMinted;
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
 
-/// Maximum allowed slippage in basis points (5%)
-pub const MAX_SLIPPAGE_BPS: u64 = 500;
-
-/// Base mint fee in basis points (0.5%)
-const BASE_FEE_BPS: u64 = 50;
 
 pub fn handler(
   ctx: Context<MintAmUSD>,
   lst_amount: u64, 
   min_amusd_out: u64,
 ) -> Result<()> {
-  // ============================================================
-  // PHASE 1: CHECKS - All validations before any state changes
-  // ============================================================
+  // All validations before any state changes
   
   // Prevent CPI attacks (instruction must be top-level)
   let ix_sysvar = &ctx.accounts.instruction_sysvar;
@@ -36,6 +30,8 @@ pub fn handler(
   require!(current_index == 0, LaminarError::InvalidCPIContext);
 
   let global_state = &ctx.accounts.global_state;
+
+  global_state.validate_version()?;
   
   // Capture current state values for calculations
   let sol_price_usd = global_state.mock_sol_price_usd;
@@ -54,10 +50,19 @@ pub fn handler(
     LaminarError::InsufficientCollateral
   );
 
-  // ============================================================
-  // PHASE 2: COMPUTE - All math logic (pure calculations)
-  // ============================================================
+  // MATH LOGICS
+  let old_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
   
+  let old_liability = if current_amusd_supply > 0 {
+    compute_liability_sol(current_amusd_supply, sol_price_usd)
+      .ok_or(LaminarError::MathOverflow)?
+  } else {
+    0
+  };
+    
+  let old_cr_bps = compute_cr_bps(old_tvl, old_liability);
+
   // Convert full LST deposit to SOL value
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
@@ -70,7 +75,7 @@ pub fn handler(
     .ok_or(LaminarError::MathOverflow)?;
 
   // Fee is taken in amUSD terms (per whitepaper: amUSD_net = amUSD_minted − fee)
-  let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, BASE_FEE_BPS)
+  let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, AMUSD_MINT_FEE_BPS)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("amUSD gross: {}", amusd_gross);
@@ -104,16 +109,13 @@ pub fn handler(
 
   msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
 
-  // ============================================================
-  // INVARIANTS: Validate before committing
-  // ============================================================
+  // Invariant checks
+
   assert_no_negative_equity(new_tvl, new_liability)?;
   assert_cr_above_minimum(new_cr, min_cr_bps)?;
   assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
 
-  // ============================================================
-  // PHASE 3: EFFECTS - Update state BEFORE external calls
-  // ============================================================
+  // State update
   {
     let global_state = &mut ctx.accounts.global_state;
     global_state.total_lst_amount = new_lst_amount;
@@ -122,10 +124,8 @@ pub fn handler(
     msg!("State updated: LST={}, amUSD={}", new_lst_amount, new_amusd_supply);
   }
 
-  // ============================================================
-  // PHASE 4: INTERACTIONS - External calls (CPIs)
-  // ============================================================
-  
+  // CPI calls
+
   // Transfer full LST from user to vault
   let transfer_accounts = TransferChecked {
     from: ctx.accounts.user_lst_account.to_account_info(),
@@ -179,6 +179,20 @@ pub fn handler(
     msg!("Minted {} amUSD fee to treasury", amusd_fee);
   }
 
+  ctx.accounts.vault.reload()?;
+  ctx.accounts.amusd_mint.reload()?;
+
+  let expected_vault_balance = ctx.accounts.global_state.total_lst_amount;
+  require!(
+    ctx.accounts.vault.amount == expected_vault_balance,
+    LaminarError::BalanceSheetViolation
+  );
+
+  require!(
+    ctx.accounts.amusd_mint.supply == ctx.accounts.global_state.amusd_supply,
+    LaminarError::BalanceSheetViolation
+  );
+
   msg!("Mint complete!");
   msg!("New TVL: {} lamports", new_tvl);
   msg!("New amUSD supply: {} (user {} + treasury {})", new_amusd_supply, amusd_to_user, amusd_fee);
@@ -188,11 +202,14 @@ pub fn handler(
     lst_deposited: lst_amount,
     amusd_minted: amusd_to_user,
     fee: amusd_fee,
+    old_tvl,
     new_tvl,
+    old_cr_bps,
     new_cr_bps: new_cr,
     sol_price_used: sol_price_usd,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
+
 
   Ok(())
 }
