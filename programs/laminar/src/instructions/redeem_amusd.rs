@@ -36,6 +36,7 @@ pub fn handler(
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(amusd_amount > 0, LaminarError::ZeroAmount);
   require!(min_lst_out > 0, LaminarError::ZeroAmount);
+  require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
   msg!("amUSD to redeem: {}", amusd_amount);
 
@@ -154,7 +155,7 @@ pub fn handler(
   msg!("Burned {} amUSD from user", amusd_amount);
 
   // Transfer LST from vault to user
-  let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.bumps.vault_authority]];
+  let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.accounts.global_state.vault_authority_bump]];
   let signer = &[&seeds[..]];
 
   let transfer_user_accounts = TransferChecked {

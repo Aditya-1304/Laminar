@@ -39,6 +39,7 @@ pub fn handler(
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(asol_amount > 0, LaminarError::ZeroAmount);
   require!(min_lst_out > 0, LaminarError::ZeroAmount);
+  require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
   msg!("aSOL to redeem: {}", asol_amount);
 
@@ -162,7 +163,7 @@ pub fn handler(
   msg!("Burned {} aSOL from user", asol_amount);
 
   // Transfer LST from vault to user
-  let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.bumps.vault_authority]];
+  let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.accounts.global_state.vault_authority_bump]];
   let signer = &[&seeds[..]];
 
   let transfer_user_accounts = TransferChecked {
