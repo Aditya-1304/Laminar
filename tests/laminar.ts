@@ -20,6 +20,7 @@ import {
   getAccount,
   getMint,
 } from "@solana/spl-token";
+import { expect } from "chai";
 
 const SOL_PRECISION = new BN(1_000_000_000);
 const USD_PRECISION = new BN(1_000_000);
@@ -240,7 +241,291 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
    */
 
   async function getGlobalState(): Promise<GlobalStateData> {
+    const account = await program.account.globalState.fetch(protocolState.globalState);
+    return account as unknown as GlobalStateData;
+  }
+
+  /**
+   * Setup a user with LST tokens and token accounts
+   */
+  async function setupUser(lstAmount: number): Promise<{
+    user: Keypair,
+    lstAccount: PublicKey,
+    amusdAccount: PublicKey,
+    asolAccount: PublicKey,
+  }> {
+    const user = Keypair.generate();
+    await airdropSol(user.publicKey, 5);
+
+    const lstAccountInfo = await getOrCreateAssociatedTokenAccount(
+      connection,
+      user,
+      protocolState.lstMint,
+      user.publicKey
+    );
+
+    await mintTo(
+      connection,
+      protocolState.authority,
+      protocolState.lstMint,
+      lstAccountInfo.address,
+      protocolState.authority,
+      lstAmount * LAMPORTS_PER_SOL
+    );
+
+    const amusdAccountInfo = await getOrCreateAssociatedTokenAccount(
+      connection,
+      user,
+      protocolState.amusdMint.publicKey,
+      user.publicKey,
+    );
+
+    const asolAccountInfo = await getOrCreateAssociatedTokenAccount(
+      connection,
+      user,
+      protocolState.asolMint.publicKey,
+      user.publicKey,
+    )
+
+    return {
+      user,
+      lstAccount: lstAccountInfo.address,
+      amusdAccount: amusdAccountInfo.address,
+      asolAccount: asolAccountInfo.address
+    }
+  }
+
+  /**
+   * Mint amUSD for a user
+   */
+  async function minAmUSD(
+    user: Keypair,
+    userLstAccount: PublicKey,
+    userAmusdAccount: PublicKey,
+    lstAmount: BN,
+    minAmusdOut: BN,
+  ): Promise<string> {
+    const state = await getGlobalState();
+    const [vaultAuthority] = getVaultAuthorityPda();
+
+    const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.amusdMint.publicKey,
+      owner: state.treasury,
+    });
+
+    return await program.methods
+      .mintAmusd(lstAmount, minAmusdOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        amusdMint: protocolState.amusdMint.publicKey,
+        userAmusdAccount: userAmusdAccount,
+        treasuryAmusdAccount: treasuryAmusdAccount,
+        treasury: state.treasury,
+        userLstAccount: userLstAccount,
+        vault: protocolState.vault,
+        vaultAuthority: vaultAuthority,
+        lstMint: protocolState.lstMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([user])
+      .rpc();
 
   }
 
+  /**
+   * Redeem amUSD for a user
+   */
+  async function redeemAmUSD(
+    user: Keypair,
+    userLstAccount: PublicKey,
+    userAmusdAccount: PublicKey,
+    amusdAmount: BN,
+    minLstOut: BN
+  ): Promise<string> {
+    const state = await getGlobalState();
+    const [vaultAuthority] = getVaultAuthorityPda();
+
+    const treasuryLstAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.lstMint,
+      owner: state.treasury,
+    })
+
+    return await program.methods
+      .redeemAmusd(amusdAmount, minLstOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        amusdMint: protocolState.amusdMint.publicKey,
+        userAmusdAccount: userAmusdAccount,
+        treasury: state.treasury,
+        treasuryLstAccount: treasuryLstAccount,
+        userLstAccount: userLstAccount,
+        vault: protocolState.vault,
+        vaultAuthority: vaultAuthority,
+        lstMint: protocolState.lstMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([user])
+      .rpc();
+  }
+
+  /**
+   * Mint aSOL for a user
+   */
+  async function mintAsol(
+    user: Keypair,
+    userLstAccount: PublicKey,
+    userAsolAccount: PublicKey,
+    lstAmount: BN,
+    minAsolOut: BN
+  ): Promise<string> {
+    const state = await getGlobalState();
+    const [vaultAuthority] = getVaultAuthorityPda();
+
+    const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.asolMint.publicKey,
+      owner: state.treasury,
+    });
+
+    return await program.methods
+      .mintAsol(lstAmount, minAsolOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        asolMint: protocolState.asolMint.publicKey,
+        userAsolAccount: userAsolAccount,
+        treasuryAsolAccount: treasuryAsolAccount,
+        treasury: state.treasury,
+        userLstAccount: userLstAccount,
+        vault: protocolState.vault,
+        vaultAuthority: vaultAuthority,
+        lstMint: protocolState.lstMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([user])
+      .rpc();
+  }
+
+  /**
+   * Redeem aSOL for a user
+   */
+
+  async function redeemAsol(
+    user: Keypair,
+    userLstAccount: PublicKey,
+    userAsolAccount: PublicKey,
+    asolAmount: BN,
+    minLstOut: BN
+  ): Promise<string> {
+    const state = await getGlobalState();
+    const [vaultAuthority] = getVaultAuthorityPda();
+
+    const treasuryLstAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.lstMint,
+      owner: state.treasury,
+    });
+
+    return await program.methods
+      .redeemAsol(asolAmount, minLstOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        asolMint: protocolState.asolMint.publicKey,
+        userAsolAccount: userAsolAccount,
+        treasury: state.treasury,
+        treasuryLstAccount: treasuryLstAccount,
+        userLstAccount: userLstAccount,
+        vault: protocolState.vault,
+        vaultAuthority: vaultAuthority,
+        lstMint: protocolState.lstMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([user])
+      .rpc();
+  }
+
+  /**
+   * Update mock prices (admin only)
+   */
+  async function updateMockPrices(
+    newSolPriceUsd: BN,
+    newLstToSolRate: BN
+  ): Promise<string> {
+    return await program.methods
+      .updateMockPrices(newSolPriceUsd, newLstToSolRate)
+      .accounts({
+        authority: protocolState.authority.publicKey,
+        globalState: protocolState.globalState,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      })
+      .signers([protocolState.authority])
+      .rpc();
+  }
+
+  /**
+   * Calculate expected CR from state
+   */
+  async function calculateCR(): Promise<BN> {
+    const state = await getGlobalState();
+    const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+    const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+    return computeCrBps(tvl, liability);
+  }
+
+  before(async () => {
+    protocolState = await initializeProtocol();
+    console.log("Protocol initialized!");
+    console.log("  GlobalState:", protocolState.globalState.toBase58());
+    console.log("  amUSD Mint:", protocolState.amusdMint.publicKey.toBase58());
+    console.log("  aSOL Mint:", protocolState.asolMint.publicKey.toBase58());
+    console.log("  LST Mint:", protocolState.lstMint.toBase58());
+    console.log("  Vault:", protocolState.vault.toBase58());
+  });
+
+  describe("1. Protocol Initialization", () => {
+    it("Initializes protocol with correct parameters", async () => {
+      const state = await getGlobalState();
+
+      expect(state.version).to.equal(1);
+      expect(state.minCrBps.toNumber()).to.equal(MIN_CR_BPS.toNumber());
+      expect(state.targetCrBps.toNumber()).to.equal(TARGET_CR_BPS.toNumber());
+      expect(state.mockSolPriceUsd.toNumber()).to.equal(MOCK_SOL_PRICE_USD.toNumber());
+      expect(state.mockLstToSolRate.toNumber()).to.equal(MOCK_LST_TO_SOL_RATE.toNumber());
+      expect(state.totalLstAmount.toNumber()).to.equal(0);
+      expect(state.amusdSupply.toNumber()).to.equal(0);
+      expect(state.asolSupply.toNumber()).to.equal(0);
+      expect(state.mintPaused).to.be.false;
+      expect(state.redeemPaused).to.be.false;
+    });
+
+    it("Sets correct mint addresses", async () => {
+      const state = await getGlobalState();
+
+      expect(state.amusdMint.toBase58()).to.equal(protocolState.amusdMint.publicKey.toBase58());
+      expect(state.asolMint.toBase58()).to.equal(protocolState.asolMint.publicKey.toBase58());
+      expect(state.supportedLstMint.toBase58()).to.equal(protocolState.lstMint.toBase58());
+    });
+
+    it("Sets treasury to authority on initialization", async () => {
+      const state = await getGlobalState();
+      expect(state.treasury.toBase58()).to.equal(protocolState.authority.publicKey.toBase58());
+    });
+  });
 })
