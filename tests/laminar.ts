@@ -1229,4 +1229,126 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       }
     });
   });
+
+  describe("16. Oracle Price Manipulation Bounds", () => {
+    it("Rejects zero SOL price", async () => {
+      try {
+        await updateMockPrices(new BN(0), MOCK_LST_TO_SOL_RATE);
+        expect.fail("Should reject zero price");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+
+    it("Rejects zero LST rate", async () => {
+      try {
+        await updateMockPrices(MOCK_SOL_PRICE_USD, new BN(0));
+        expect.fail("Should reject zero rate");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+
+    it("Handles extreme SOL price ($1M)", async () => {
+      await updateMockPrices(new BN(1_000_000_000_000), MOCK_LST_TO_SOL_RATE); // $1M
+
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+
+      // At $1M/SOL, liability in SOL terms should be tiny
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Liability at $1M: ${liability.toNumber() / 1e9} SOL`);
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+
+    it("Handles extreme SOL price drop ($0.01)", async () => {
+      await updateMockPrices(new BN(10_000), MOCK_LST_TO_SOL_RATE); // $0.01
+
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Liability at $0.01: ${liability.toNumber() / 1e9} SOL`);
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+
+    it("Handles LST appreciation (2x)", async () => {
+      await updateMockPrices(MOCK_SOL_PRICE_USD, new BN(2_000_000_000)); // 1 LST = 2 SOL
+
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+
+      console.log(`  TVL with 2x LST rate: ${tvl.toNumber() / 1e9} SOL`);
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+  });
+
+  describe("17. Multi-User Fairness", () => {
+    let userA: Keypair;
+    let userB: Keypair;
+    let userALst: PublicKey;
+    let userBLst: PublicKey;
+    let userAAsol: PublicKey;
+    let userBAsol: PublicKey;
+
+    before(async () => {
+      const setupA = await setupUser(100);
+      const setupB = await setupUser(100);
+      userA = setupA.user;
+      userB = setupB.user;
+      userALst = setupA.lstAccount;
+      userBLst = setupB.lstAccount;
+      userAAsol = setupA.asolAccount;
+      userBAsol = setupB.asolAccount;
+    });
+
+    it("Second depositor gets fair NAV after first deposit", async () => {
+      const depositAmount = new BN(10 * LAMPORTS_PER_SOL);
+
+      // User A deposits first
+      await mintAsol(userA, userALst, userAAsol, depositAmount, new BN(1));
+      const userABalance = await getAccount(connection, userAAsol);
+
+      // User B deposits same amount after
+      await mintAsol(userB, userBLst, userBAsol, depositAmount, new BN(1));
+      const userBBalance = await getAccount(connection, userBAsol);
+
+      // Both should get roughly equal aSOL (minus small NAV drift)
+      const diff = Math.abs(Number(userABalance.amount) - Number(userBBalance.amount));
+      const tolerance = Number(userABalance.amount) * 0.01; // 1% tolerance
+
+      console.log(`  User A aSOL: ${Number(userABalance.amount)}`);
+      console.log(`  User B aSOL: ${Number(userBBalance.amount)}`);
+      console.log(`  Difference: ${diff} (tolerance: ${tolerance})`);
+
+      expect(diff).to.be.lessThan(tolerance);
+    });
+
+    it("Redemption NAV is consistent across users", async () => {
+      const redeemAmount = new BN(1 * LAMPORTS_PER_SOL);
+
+      const userALstBefore = await getAccount(connection, userALst);
+      await redeemAsol(userA, userALst, userAAsol, redeemAmount, new BN(100_000));
+      const userALstAfter = await getAccount(connection, userALst);
+      const userAReceived = Number(userALstAfter.amount) - Number(userALstBefore.amount);
+
+      const userBLstBefore = await getAccount(connection, userBLst);
+      await redeemAsol(userB, userBLst, userBAsol, redeemAmount, new BN(100_000));
+      const userBLstAfter = await getAccount(connection, userBLst);
+      const userBReceived = Number(userBLstAfter.amount) - Number(userBLstBefore.amount);
+
+      const diff = Math.abs(userAReceived - userBReceived);
+      const tolerance = userAReceived * 0.01;
+
+      console.log(`  User A received: ${userAReceived} LST`);
+      console.log(`  User B received: ${userBReceived} LST`);
+
+      expect(diff).to.be.lessThan(tolerance);
+    });
+  });
 });
