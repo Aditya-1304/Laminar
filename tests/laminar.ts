@@ -836,4 +836,81 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     });
   });
 
+  describe("9. Slippage Protection", () => {
+    it("Rejects mint when output below minimum", async () => {
+      const lstAmount = new BN(1 * LAMPORTS_PER_SOL);
+      const unreasonablyHighMin = new BN(1000 * LAMPORTS_PER_SOL); // Impossible
+
+      try {
+        await mintAsol(user2, user2LstAccount, user2AsolAccount, lstAmount, unreasonablyHighMin);
+        expect.fail("Should have rejected due to slippage");
+      } catch (err: any) {
+        expect(err.toString()).to.include("SlippageExceeded");
+      }
+    });
+  });
+
+
+  describe("10. Admin Parameter Updates", () => {
+    it("Admin can update risk parameters", async () => {
+      const newMinCr = new BN(14_000); // 140%
+      const newTargetCr = new BN(16_000); // 160%
+
+      await program.methods
+        .updateParameters(newMinCr, newTargetCr)
+        .accounts({
+          authority: protocolState.authority.publicKey,
+          globalState: protocolState.globalState,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([protocolState.authority])
+        .rpc();
+
+      const state = await getGlobalState();
+      expect(state.minCrBps.toNumber()).to.equal(newMinCr.toNumber());
+      expect(state.targetCrBps.toNumber()).to.equal(newTargetCr.toNumber());
+    });
+
+    it("Non-admin cannot update parameters", async () => {
+      try {
+        await program.methods
+          .updateParameters(new BN(12_000), new BN(14_000))
+          .accounts({
+            authority: user1.publicKey,
+            globalState: protocolState.globalState,
+            clock: SYSVAR_CLOCK_PUBKEY,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have rejected non-admin");
+      } catch (err: any) {
+        // Expected - constraint violation
+        expect(err.toString()).to.include("ConstraintHasOne");
+      }
+    });
+  });
+
+
+  describe("11. Balance Sheet Invariant", () => {
+    it("TVL always equals Liability + Equity", async () => {
+      const state = await getGlobalState();
+
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const equity = computeEquitySol(tvl, liability);
+
+      const total = liability.add(equity);
+      const diff = tvl.sub(total).abs();
+
+      // Allow small tolerance due to rounding
+      const tolerance = BN.max(tvl.div(new BN(10_000)), new BN(1000)); // 1 bps or 1000 lamports
+      expect(diff.lte(tolerance)).to.be.true;
+
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Liability: ${liability.toNumber() / 1e9} SOL`);
+      console.log(`  Equity: ${equity.toNumber() / 1e9} SOL`);
+      console.log(`  Difference: ${diff.toNumber()} lamports`);
+    });
+  });
+
 })
