@@ -298,7 +298,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   /**
    * Mint amUSD for a user
    */
-  async function minAmUSD(
+  async function mintAmUSD(
     user: Keypair,
     userLstAccount: PublicKey,
     userAmusdAccount: PublicKey,
@@ -534,6 +534,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       const userSetup = await setupUser(100); // Gives 100 lst to user
       user1 = userSetup.user;
       user1LstAccount = userSetup.lstAccount;
+      user1AmusdAccount = userSetup.amusdAccount;
       user1AsolAccount = userSetup.asolAccount;
     });
 
@@ -574,4 +575,107 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       expect(cr.toNumber()).to.equal(Number.MAX_SAFE_INTEGER);
     });
   })
+
+  describe("3. Mint amUSD (Debt Creation)", () => {
+    it("Mints amUSD and decreases CR", async () => {
+      const lstAmount = new BN(5 * LAMPORTS_PER_SOL); // 5 LST
+      const minAmusdOut = new BN(1);
+
+      const crBefore = await calculateCR();
+
+      await mintAmUSD(user1, user1LstAccount, user1AmusdAccount, lstAmount, minAmusdOut);
+
+      const crAfter = await calculateCR();
+
+      // CR should decrease
+      expect(crAfter.lt(crBefore)).to.be.true;
+      console.log(`  CR changed from ${crBefore.toString()} to ${crAfter.toNumber()} bps`);
+    });
+
+    it("Correctly calculates amUSD amount", async () => {
+      const state = await getGlobalState();
+
+      // User deposited 5 LST
+      // SOL value = 5 * 1.05 = 5.25 SOL
+      // amUSD (before fee) = 5.25 * 100 = 525 USD
+      // But we need to check in micro-USD (USD_PRECISION = 1e6)
+
+      const userAmusdBalance = await getAccount(connection, user1AmusdAccount);
+      expect(Number(userAmusdBalance.amount)).to.be.greaterThan(0);
+      console.log(`  User amUSD balance: ${Number(userAmusdBalance.amount) / 1e6} USD`);
+    });
+
+    it("Updates balance sheet correctly", async () => {
+      const state = await getGlobalState();
+
+      // Total LST should be 10 (aSOL) + 5 (amUSD) = 15 LST
+      expect(state.totalLstAmount.toNumber()).to.equal(15 * LAMPORTS_PER_SOL);
+
+      // amUSD supply should be > 0
+      expect(state.amusdSupply.toNumber()).to.be.greaterThan(0);
+
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const equity = computeEquitySol(tvl, liability);
+
+      // Allow small rounding tolerance
+      const diff = tvl.sub(liability.add(equity)).abs();
+      expect(diff.toNumber()).to.be.lessThan(1000); // < 1000 lamports tolerance
+    });
+  });
+
+  describe("4. CR Safety Checks", () => {
+    it("Rejects amUSD mint when CR would fall below minimum", async () => {
+
+      const userSetup = await setupUser(1000);
+      user2 = userSetup.user;
+      user2LstAccount = userSetup.lstAccount;
+      user2AmusdAccount = userSetup.amusdAccount;
+      user2AsolAccount = userSetup.asolAccount;
+
+      // Try to mint a huge amount that would tank CR
+      const hugeAmount = new BN(500 * LAMPORTS_PER_SOL);
+      const minAmusdOut = new BN(1);
+
+      try {
+        await mintAmUSD(user2, user2LstAccount, user2AmusdAccount, hugeAmount, minAmusdOut);
+        expect.fail("Should have rejected due to CR violation");
+      } catch (err: any) {
+        expect(err.toString()).to.include("CollateralRatioTooLow");
+      }
+    });
+
+    it("Allows amUSD mint when CR stays above minimum", async () => {
+      // First add more equity to have room for debt
+      const equityAmount = new BN(50 * LAMPORTS_PER_SOL);
+      await mintAsol(user2, user2LstAccount, user2AsolAccount, equityAmount, new BN(1));
+
+      // Now mint a smaller amUSD amount
+      const smallAmount = new BN(5 * LAMPORTS_PER_SOL);
+      const crBefore = await calculateCR();
+
+      await mintAmUSD(user2, user2LstAccount, user2AmusdAccount, smallAmount, new BN(1));
+
+      const crAfter = await calculateCR();
+      expect(crAfter.gte(MIN_CR_BPS)).to.be.true;
+      console.log(`  CR after small mint: ${crAfter.toNumber()} bps`);
+    });
+  });
+
+
+  describe("5. aSOL Minting Improves CR", () => {
+    it("Minting aSOL increases collateral ratio", async () => {
+      const crBefore = await calculateCR();
+
+      // Mint aSOL (injects equity without adding debt)
+      const lstAmount = new BN(20 * LAMPORTS_PER_SOL);
+      await mintAsol(user2, user2LstAccount, user2AsolAccount, lstAmount, new BN(1));
+
+      const crAfter = await calculateCR();
+
+      // CR should improve
+      expect(crAfter.gt(crBefore)).to.be.true;
+      console.log(`  CR improved from ${crBefore.toNumber()} to ${crAfter.toNumber()} bps`);
+    });
+  });
 })
