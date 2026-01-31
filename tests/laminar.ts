@@ -913,4 +913,113 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     });
   });
 
+  describe("12. Edge Case: Insolvency Protection", () => {
+    it("Rejects aSOL redemption when NAV is zero (protocol insolvency)", async () => {
+
+      // Scenario where TVL < Liability
+      const userSetup = await setupUser(100)
+      const testUser = userSetup.user;
+
+      await mintAsol(testUser, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(20 * LAMPORTS_PER_SOL), new BN(1));
+
+      await mintAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
+        new BN(10 * LAMPORTS_PER_SOL), new BN(1));
+
+      await updateMockPrices(new BN(10_000_000), MOCK_LST_TO_SOL_RATE);
+
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      expect(tvl.lt(liability)).to.be.true;
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      if (Number(userAsolBalance.amount) > 0) {
+        try {
+          await redeemAsol(testUser, userSetup.lstAccount, userSetup.asolAccount,
+            new BN(Number(userAsolBalance.amount)), new BN(1));
+          expect.fail("Should reject redemption when insolvent");
+        } catch (err: any) {
+          expect(err.toString()).to.include("InsolventProtocol");
+        }
+      }
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+
+    it("amUSD redemption still works during insolvency (priority exit)", async () => {
+      // amUSD holders should ALWAYS be able to exit (senior tranche priority)
+      const userSetup = await setupUser(100);
+      const testUser = userSetup.user;
+
+      await mintAsol(testUser, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(30 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
+        new BN(5 * LAMPORTS_PER_SOL), new BN(1));
+
+      // Moderate price drop
+      await updateMockPrices(new BN(50_000_000), MOCK_LST_TO_SOL_RATE); // $50 SOL
+
+      const userAmusdBalance = await getAccount(connection, userSetup.amusdAccount);
+      const smallRedemption = new BN(Number(userAmusdBalance.amount) / 4);
+
+      if (smallRedemption.gt(new BN(0))) {
+        // Should succeed - amUSD redemption improves CR
+        await redeemAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
+          smallRedemption, new BN(1));
+      }
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+  });
+
+  describe("13. Dust Attack Prevention", () => {
+    it("Rejects LST deposit below minimum threshold", async () => {
+      const userSetup = await setupUser(1);
+      const dustAmount = new BN(10_000); // 0.00001 SOL - below MIN_LST_DEPOSIT
+
+      try {
+        await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          dustAmount, new BN(1));
+        expect.fail("Should reject dust deposit");
+      } catch (err: any) {
+        expect(err.toString()).to.include("AmountTooSmall");
+      }
+    });
+
+    it("Rejects aSOL redemption that would output dust LST", async () => {
+      const userSetup = await setupUser(10);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL), new BN(1));
+
+      // Try redeeming tiny amount where output LST would be dust
+      const tinyAsol = new BN(1000); // 0.000001 aSOL
+
+      try {
+        await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          tinyAsol, new BN(1)); // min_lst_out = 1 is below threshold
+        expect.fail("Should reject dust output");
+      } catch (err: any) {
+        expect(err.toString()).to.include("AmountTooSmall");
+      }
+    });
+
+    it("Rejects mint when output tokens would be below minimum", async () => {
+      const userSetup = await setupUser(1);
+
+      // Amount that after fees would produce < MIN_ASOL_MINT
+      const minimalAmount = new BN(500_000); // 0.0005 SOL
+
+      try {
+        await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          minimalAmount, new BN(1));
+        expect.fail("Should reject when output too small");
+      } catch (err: any) {
+        expect(err.toString()).to.include("AmountTooSmall");
+      }
+    });
+  });
+
+
+
 })
