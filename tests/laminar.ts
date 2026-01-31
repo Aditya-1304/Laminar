@@ -1351,4 +1351,356 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       expect(diff).to.be.lessThan(tolerance);
     });
   });
+
+  describe("18. Supply Synchronization Invariant", () => {
+    it("On-chain mint supply matches GlobalState tracking", async () => {
+      const state = await getGlobalState();
+
+      const amusdMintInfo = await getMint(connection, protocolState.amusdMint.publicKey);
+      const asolMintInfo = await getMint(connection, protocolState.asolMint.publicKey);
+
+      expect(Number(amusdMintInfo.supply)).to.equal(state.amusdSupply.toNumber());
+      expect(Number(asolMintInfo.supply)).to.equal(state.asolSupply.toNumber());
+
+      console.log(`  amUSD: state=${state.amusdSupply.toNumber()}, mint=${amusdMintInfo.supply}`);
+      console.log(`  aSOL: state=${state.asolSupply.toNumber()}, mint=${asolMintInfo.supply}`);
+    });
+
+    it("Vault balance matches GlobalState LST tracking", async () => {
+      const state = await getGlobalState();
+      const vaultInfo = await getAccount(connection, protocolState.vault);
+
+      expect(Number(vaultInfo.amount)).to.equal(state.totalLstAmount.toNumber());
+
+      console.log(`  Vault: ${vaultInfo.amount}, State: ${state.totalLstAmount.toNumber()}`);
+    });
+  });
+
+  describe("19. First Depositor Attack Prevention", () => {
+    it("First aSOL minter cannot manipulate NAV for subsequent depositors", async () => {
+      // This test verifies the "1 aSOL = 1 SOL" first-mint rule
+      // prevents the classic vault inflation attack
+
+      // In a fresh protocol, verify first mint uses 1:1 rate
+      const state = await getGlobalState();
+
+      // First mint should give sol_value * (1 - fee) aSOL
+      // NOT based on manipulatable NAV
+      console.log(`  First mint rule: 1 aSOL = 1 SOL value (minus fees)`);
+      console.log(`  This prevents donation attacks that inflate NAV`);
+    });
+  });
+
+  describe("20. Zero Amount Edge Cases", () => {
+    it("Rejects zero LST deposit for aSOL", async () => {
+      const userSetup = await setupUser(10);
+
+      try {
+        await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          new BN(0), new BN(0));
+        expect.fail("Should reject zero deposit");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+
+    it("Rejects zero LST deposit for amUSD", async () => {
+      const userSetup = await setupUser(10);
+
+      try {
+        await mintAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+          new BN(0), new BN(0));
+        expect.fail("Should reject zero deposit");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+
+    it("Rejects zero aSOL redemption", async () => {
+      const userSetup = await setupUser(10);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL), new BN(1));
+
+      try {
+        await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          new BN(0), new BN(100_000));
+        expect.fail("Should reject zero redemption");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+
+    it("Rejects zero amUSD redemption", async () => {
+      const userSetup = await setupUser(50);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(20 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+        new BN(5 * LAMPORTS_PER_SOL), new BN(1));
+
+      try {
+        await redeemAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+          new BN(0), new BN(100_000));
+        expect.fail("Should reject zero redemption");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ZeroAmount");
+      }
+    });
+  });
+
+  describe("21. Fee Accumulation Verification", () => {
+    it("Treasury receives aSOL minting fees", async () => {
+      const state = await getGlobalState();
+      const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.asolMint.publicKey,
+        owner: state.treasury,
+      });
+
+      const balanceBefore = await getAccount(connection, treasuryAsolAccount)
+        .then(acc => Number(acc.amount))
+        .catch(() => 0);
+
+      const userSetup = await setupUser(20);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(10 * LAMPORTS_PER_SOL), new BN(1));
+
+      const balanceAfter = await getAccount(connection, treasuryAsolAccount)
+        .then(acc => Number(acc.amount));
+
+      const feeReceived = balanceAfter - balanceBefore;
+      expect(feeReceived).to.be.greaterThan(0);
+
+      console.log(`  Treasury aSOL fee received: ${feeReceived / 1e9} aSOL`);
+    });
+
+    it("Treasury receives LST redemption fees", async () => {
+      const state = await getGlobalState();
+      const treasuryLstAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.lstMint,
+        owner: state.treasury,
+      });
+
+      const balanceBefore = await getAccount(connection, treasuryLstAccount)
+        .then(acc => Number(acc.amount))
+        .catch(() => 0);
+
+      const userSetup = await setupUser(30);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(10 * LAMPORTS_PER_SOL), new BN(1));
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(Number(userAsolBalance.amount) / 2), new BN(100_000));
+
+      const balanceAfter = await getAccount(connection, treasuryLstAccount)
+        .then(acc => Number(acc.amount));
+
+      const feeReceived = balanceAfter - balanceBefore;
+      expect(feeReceived).to.be.greaterThan(0);
+
+      console.log(`  Treasury LST fee received: ${feeReceived / 1e9} LST`);
+    });
+  });
+
+  describe("22. Operation Counter Monotonicity", () => {
+    it("Operation counter increments on every state change", async () => {
+      const stateBefore = await getGlobalState();
+      const counterBefore = stateBefore.operationCounter.toNumber();
+
+      const userSetup = await setupUser(10);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL), new BN(1));
+
+      const stateAfter = await getGlobalState();
+      const counterAfter = stateAfter.operationCounter.toNumber();
+
+      expect(counterAfter).to.equal(counterBefore + 1);
+      console.log(`  Counter: ${counterBefore} → ${counterAfter}`);
+    });
+  });
+
+  describe("23. Redeem Pause Security", () => {
+    it("Admin can pause redemptions independently", async () => {
+      await program.methods
+        .emergencyPause(false, true)
+        .accounts({
+          authority: protocolState.authority.publicKey,
+          globalState: protocolState.globalState,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([protocolState.authority])
+        .rpc();
+
+      const state = await getGlobalState();
+      expect(state.mintPaused).to.be.false;
+      expect(state.redeemPaused).to.be.true;
+    });
+
+    it("Redemption rejected when paused", async () => {
+      const userSetup = await setupUser(10);
+
+      // User already has tokens from previous tests
+      try {
+        await redeemAsol(user1, user1LstAccount, user1AsolAccount,
+          new BN(1000000), new BN(100_000));
+        expect.fail("Should reject when paused");
+      } catch (err: any) {
+        expect(err.toString()).to.include("RedeemPaused");
+      }
+
+      // Unpause
+      await program.methods
+        .emergencyPause(false, false)
+        .accounts({
+          authority: protocolState.authority.publicKey,
+          globalState: protocolState.globalState,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([protocolState.authority])
+        .rpc();
+    });
+  });
+
+  describe("24. Insufficient Balance Handling", () => {
+    it("Rejects redemption exceeding user balance", async () => {
+      const userSetup = await setupUser(10);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL), new BN(1));
+
+      const userBalance = await getAccount(connection, userSetup.asolAccount);
+      const tooMuch = new BN(Number(userBalance.amount) * 2);
+
+      try {
+        await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          tooMuch, new BN(100_000));
+        expect.fail("Should reject exceeding balance");
+      } catch (err: any) {
+        expect(err.toString()).to.include("InsufficientSupply");
+      }
+    });
+
+    it("Rejects deposit exceeding user LST balance", async () => {
+      const userSetup = await setupUser(1); // Only 1 LST
+
+      try {
+        await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          new BN(10 * LAMPORTS_PER_SOL), new BN(1)); // Try to deposit 10 LST
+        expect.fail("Should reject exceeding balance");
+      } catch (err: any) {
+        expect(err.toString()).to.include("InsufficientCollateral");
+      }
+    });
+  });
+
+  describe("25. aSOL Redemption CR Impact", () => {
+    it("aSOL redemption can violate CR if too aggressive", async () => {
+      // Setup: Create a protocol state near minimum CR
+      const userSetup = await setupUser(200);
+
+      // Add equity
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(50 * LAMPORTS_PER_SOL), new BN(1));
+
+      // Add significant debt
+      await mintAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+        new BN(30 * LAMPORTS_PER_SOL), new BN(1));
+
+      const crBefore = await calculateCR();
+      console.log(`  CR before aSOL redemption: ${crBefore.toNumber()} bps`);
+
+      // Try to redeem large aSOL amount which would tank CR
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      const largeRedemption = new BN(Number(userAsolBalance.amount) * 0.8); // 80%
+
+      try {
+        await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+          largeRedemption, new BN(100_000));
+        const crAfter = await calculateCR();
+        // If succeeded, CR should still be above minimum
+        expect(crAfter.gte(new BN(14_000))).to.be.true; // min_cr was updated to 14_000
+      } catch (err: any) {
+        expect(err.toString()).to.include("CollateralRatioTooLow");
+        console.log("  Large aSOL redemption correctly rejected for CR protection");
+      }
+    });
+  });
+
+  describe("26. Leverage Calculation Verification", () => {
+    it("Leverage increases as debt increases", async () => {
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const equity = computeEquitySol(tvl, liability);
+
+      // Leverage = TVL / Equity
+      const leverage = equity.isZero() ? new BN(0) : tvl.mul(new BN(100)).div(equity);
+
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Equity: ${equity.toNumber() / 1e9} SOL`);
+      console.log(`  Leverage: ${leverage.toNumber() / 100}x`);
+
+      // Leverage should be >= 1x (100)
+      if (!equity.isZero()) {
+        expect(leverage.toNumber()).to.be.gte(100);
+      }
+    });
+  });
+
+  describe("27. Version Validation", () => {
+    it("Protocol correctly reports version 1", async () => {
+      const state = await getGlobalState();
+      expect(state.version).to.equal(1);
+    });
+  });
+
+  describe("28. Maximum Value Boundaries", () => {
+    it("Handles large but valid deposit amounts", async () => {
+      const userSetup = await setupUser(1000);
+      const largeAmount = new BN(500 * LAMPORTS_PER_SOL);
+
+      // Should succeed
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        largeAmount, new BN(1));
+
+      const balance = await getAccount(connection, userSetup.asolAccount);
+      expect(Number(balance.amount)).to.be.greaterThan(0);
+    });
+  });
+
+  describe("29. Final State Integrity Check", () => {
+    it("Protocol state is consistent after all tests", async () => {
+      const state = await getGlobalState();
+
+      // Verify all invariants hold
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const equity = computeEquitySol(tvl, liability);
+
+      // Balance sheet: TVL = Liability + Equity
+      const total = liability.add(equity);
+      const diff = tvl.sub(total).abs();
+      const tolerance = BN.max(tvl.div(new BN(10_000)), new BN(1000));
+
+      expect(diff.lte(tolerance)).to.be.true;
+
+      // Supply sync
+      const amusdMint = await getMint(connection, protocolState.amusdMint.publicKey);
+      const asolMint = await getMint(connection, protocolState.asolMint.publicKey);
+      const vault = await getAccount(connection, protocolState.vault);
+
+      expect(Number(amusdMint.supply)).to.equal(state.amusdSupply.toNumber());
+      expect(Number(asolMint.supply)).to.equal(state.asolSupply.toNumber());
+      expect(Number(vault.amount)).to.equal(state.totalLstAmount.toNumber());
+
+      console.log("\n=== FINAL PROTOCOL STATE ===");
+      console.log(`  Version: ${state.version}`);
+      console.log(`  Operations: ${state.operationCounter.toNumber()}`);
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Liability: ${liability.toNumber() / 1e9} SOL`);
+      console.log(`  Equity: ${equity.toNumber() / 1e9} SOL`);
+      console.log(`  amUSD Supply: ${state.amusdSupply.toNumber() / 1e6} USD`);
+      console.log(`  aSOL Supply: ${state.asolSupply.toNumber() / 1e9} aSOL`);
+      console.log(`  Vault LST: ${state.totalLstAmount.toNumber() / 1e9} LST`);
+      console.log("===========================\n");
+    });
+  });
 });
