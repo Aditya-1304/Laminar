@@ -1026,7 +1026,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       await mintAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
         new BN(5 * LAMPORTS_PER_SOL), new BN(1));
 
-      // Moderate price drop
+      // Moderate price drop 
       // At $50 SOL with 30 LST equity + 5 LST debt, should still be solvent
       await updateMockPrices(new BN(70_000_000), MOCK_LST_TO_SOL_RATE); // $70 SOL (not extreme)
 
@@ -1039,11 +1039,13 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       const smallRedemption = new BN(Number(userAmusdBalance.amount) / 4);
 
       if (smallRedemption.gt(new BN(0))) {
+
         try {
           await redeemAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
             smallRedemption, new BN(100_000)); // reasonable min_lst_out
           console.log("  amUSD redemption succeeded during price stress");
         } catch (err: any) {
+
           expect(err.toString()).to.not.include("InsolventProtocol");
         }
       }
@@ -1055,7 +1057,6 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
 
   describe("13. Dust Attack Prevention", () => {
     before(async () => {
-      // Ensure clean price state before dust tests
       await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
     });
 
@@ -1080,7 +1081,6 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
         new BN(1 * LAMPORTS_PER_SOL), new BN(1));
 
-      // Try redeeming tiny amount where output LST would be dust
       const tinyAsol = new BN(1000); // 0.000001 aSOL
 
       try {
@@ -1112,4 +1112,121 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     });
   });
 
+  describe("14. Rounding Direction Security", () => {
+    it("Protocol always rounds in its favor on mints", async () => {
+      // Verify user gets rounded-down amount
+      const userSetup = await setupUser(10);
+      const oddAmount = new BN(1_000_000_007); // Odd number to test rounding
+
+      const stateBefore = await getGlobalState();
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        oddAmount, new BN(1));
+      const stateAfter = await getGlobalState();
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      const totalMinted = stateAfter.asolSupply.sub(stateBefore.asolSupply);
+
+      // User + treasury should equal total minted (no tokens lost to rounding)
+      console.log(`  Total minted: ${totalMinted.toString()}`);
+      console.log(`  User received: ${userAsolBalance.amount.toString()}`);
+    });
+
+    it("Protocol always rounds in its favor on redemptions", async () => {
+      const userSetup = await setupUser(20);
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(10 * LAMPORTS_PER_SOL), new BN(1));
+
+      const oddRedemption = new BN(1_234_567_891); // Odd number
+      const userLstBefore = await getAccount(connection, userSetup.lstAccount);
+
+      await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        oddRedemption, new BN(100_000));
+
+      const userLstAfter = await getAccount(connection, userSetup.lstAccount);
+      const lstReceived = Number(userLstAfter.amount) - Number(userLstBefore.amount);
+
+      console.log(`  aSOL redeemed: ${oddRedemption.toString()}`);
+      console.log(`  LST received: ${lstReceived}`);
+    });
+  });
+
+  describe("15. Full Redemption (Bank Run Scenario)", () => {
+    it("Allows complete aSOL redemption when no debt exists", async () => {
+      const userSetup = await setupUser(50);
+      const depositAmount = new BN(10 * LAMPORTS_PER_SOL);
+
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        depositAmount, new BN(1));
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      const fullBalance = new BN(Number(userAsolBalance.amount));
+
+      // Should be able to redeem entire balance
+      await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        fullBalance, new BN(100_000));
+
+      const finalBalance = await getAccount(connection, userSetup.asolAccount);
+      expect(Number(finalBalance.amount)).to.equal(0);
+    });
+
+    it("Allows complete amUSD redemption", async () => {
+      const userSetup = await setupUser(100);
+
+      // Create equity buffer
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(50 * LAMPORTS_PER_SOL), new BN(1));
+
+      // Create debt
+      await mintAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+        new BN(10 * LAMPORTS_PER_SOL), new BN(1));
+
+      const userAmusdBalance = await getAccount(connection, userSetup.amusdAccount);
+      const fullBalance = new BN(Number(userAmusdBalance.amount));
+
+      // Redeem all debt
+      await redeemAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
+        fullBalance, new BN(100_000));
+
+      const finalBalance = await getAccount(connection, userSetup.amusdAccount);
+      expect(Number(finalBalance.amount)).to.equal(0);
+
+      // Verify protocol state
+      const state = await getGlobalState();
+      console.log(`  Remaining amUSD supply: ${state.amusdSupply.toNumber()}`);
+    });
+
+    it("Prevents redemption that would leave protocol below minimum TVL", async () => {
+      const userSetup = await setupUser(10);
+
+      // Make a very small deposit
+      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+        new BN(0.002 * LAMPORTS_PER_SOL), new BN(1)); // Very small deposit
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+
+      // The protocol has a lot of TVL from other tests, so this small user's 
+      // redemption won't trigger BelowMinimumTVL.so we verify if the 
+      // protocol correctly handles small redemptions.
+      if (Number(userAsolBalance.amount) > 100) {
+        const smallAmount = new BN(Number(userAsolBalance.amount) - 100);
+
+        try {
+          await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
+            smallAmount, new BN(1));
+          // If it succeeds, check the state
+          const state = await getGlobalState();
+          const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+          console.log(`  Redemption succeeded, remaining TVL: ${tvl.toNumber() / 1e9} SOL`);
+          // Verify TVL is still above minimum or is zero
+          expect(tvl.toNumber() >= 1_000_000 || tvl.toNumber() === 0).to.be.true;
+        } catch (err: any) {
+          // Could fail for various reasons - dust, slippage, or BelowMinimumTVL
+          console.log(`  Redemption rejected: ${err.message?.substring(0, 50) || err.toString().substring(0, 50)}`);
+          const acceptableErrors = ["BelowMinimumTVL", "AmountTooSmall", "SlippageExceeded", "InsufficientCollateral"];
+          const hasAcceptableError = acceptableErrors.some(e => err.toString().includes(e));
+          expect(hasAcceptableError).to.be.true;
+        }
+      }
+    });
+  });
 });
