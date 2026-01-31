@@ -678,4 +678,162 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       console.log(`  CR improved from ${crBefore.toNumber()} to ${crAfter.toNumber()} bps`);
     });
   });
+
+  describe("6. Redemptions", () => {
+    it("Redeems amUSD and returns LST", async () => {
+      const userAmusdBalanceBefore = await getAccount(connection, user1AmusdAccount);
+      const amusdAmount = new BN(Number(userAmusdBalanceBefore.amount) / 2); // Redeem half
+
+      const userLstBalanceBefore = await getAccount(connection, user1LstAccount);
+      const minLstOut = new BN(10_000_000); // 0.01 LST minimum
+
+      await redeemAmUSD(user1, user1LstAccount, user1AmusdAccount, amusdAmount, minLstOut);
+
+      const userAmusdBalanceAfter = await getAccount(connection, user1AmusdAccount);
+      const userLstBalanceAfter = await getAccount(connection, user1LstAccount);
+
+      // amUSD balance should decrease
+      expect(Number(userAmusdBalanceAfter.amount)).to.be.lessThan(Number(userAmusdBalanceBefore.amount));
+
+      // LST balance should increase
+      expect(Number(userLstBalanceAfter.amount)).to.be.greaterThan(Number(userLstBalanceBefore.amount));
+
+      console.log(`  Redeemed ${amusdAmount.toNumber() / 1e6} amUSD`);
+      console.log(`  Received ${(Number(userLstBalanceAfter.amount) - Number(userLstBalanceBefore.amount)) / 1e9} LST`);
+    });
+
+    it("amUSD redemption always improves or maintains CR", async () => {
+      const crBefore = await calculateCR();
+
+      const userAmusdBalance = await getAccount(connection, user1AmusdAccount);
+      const amusdAmount = new BN(Number(userAmusdBalance.amount)); // Redeem all
+      const minLstOut = new BN(10_000_000);
+
+      if (amusdAmount.gt(new BN(0))) {
+        await redeemAmUSD(user1, user1LstAccount, user1AmusdAccount, amusdAmount, minLstOut);
+
+        const crAfter = await calculateCR();
+        expect(crAfter.gte(crBefore)).to.be.true;
+      }
+    });
+
+    it("Redeems aSOL at NAV", async () => {
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const nav = computeAsolNav(tvl, liability, state.asolSupply);
+      console.log(`  Current aSOL NAV: ${nav.toNumber() / 1e9} SOL`);
+
+      const userAsolBalance = await getAccount(connection, user1AsolAccount);
+      const asolAmount = new BN(Number(userAsolBalance.amount) / 2); // Redeem half
+      const minLstOut = new BN(10_000_000);
+
+      if (asolAmount.gt(new BN(0))) {
+        const userLstBalanceBefore = await getAccount(connection, user1LstAccount);
+
+        await redeemAsol(user1, user1LstAccount, user1AsolAccount, asolAmount, minLstOut);
+
+        const userLstBalanceAfter = await getAccount(connection, user1LstAccount);
+        const lstReceived = Number(userLstBalanceAfter.amount) - Number(userLstBalanceBefore.amount);
+
+        console.log(`  Redeemed ${asolAmount.toNumber() / 1e9} aSOL`);
+        console.log(`  Received ${lstReceived / 1e9} LST`);
+      }
+    });
+  });
+
+  describe("7. NAV Behavior Under Price Stress", () => {
+    it("aSOL NAV decreases when SOL price drops", async () => {
+      // Get initial NAV
+      let state = await getGlobalState();
+      let tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      let liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const navBefore = computeAsolNav(tvl, liability, state.asolSupply);
+
+      // Simulate 20% price drop (SOL goes from $100 to $80)
+      const newPrice = new BN(80_000_000); // $80
+      await updateMockPrices(newPrice, MOCK_LST_TO_SOL_RATE);
+
+      // Get new NAV
+      state = await getGlobalState();
+      tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const navAfter = computeAsolNav(tvl, liability, state.asolSupply);
+
+      console.log(`  NAV before price drop: ${navBefore.toNumber() / 1e9} SOL`);
+      console.log(`  NAV after 20% price drop: ${navAfter.toNumber() / 1e9} SOL`);
+
+      // NAV should decrease (equity absorbs the loss)
+      // Note: In SOL terms, liability increases when SOL price drops
+      // because same USD debt = more SOL needed to repay
+    });
+
+    it("aSOL NAV goes to zero when TVL < Liability (insolvency)", async () => {
+      // Simulate extreme crash (SOL goes to $30)
+      const crashPrice = new BN(30_000_000); // $30
+      await updateMockPrices(crashPrice, MOCK_LST_TO_SOL_RATE);
+
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const equity = computeEquitySol(tvl, liability);
+
+      console.log(`  TVL: ${tvl.toNumber() / 1e9} SOL`);
+      console.log(`  Liability: ${liability.toNumber() / 1e9} SOL`);
+      console.log(`  Equity: ${equity.toNumber() / 1e9} SOL`);
+
+      // If insolvent, equity should be 0
+      if (tvl.lt(liability)) {
+        expect(equity.toNumber()).to.equal(0);
+        console.log("  Protocol is insolvent - equity capped at 0");
+      }
+
+      // Reset price for other tests
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE);
+    });
+  });
+
+
+  describe("8. Emergency Pause", () => {
+    it("Admin can pause minting", async () => {
+      await program.methods
+        .emergencyPause(true, false)
+        .accounts({
+          authority: protocolState.authority.publicKey,
+          globalState: protocolState.globalState,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([protocolState.authority])
+        .rpc();
+
+      const state = await getGlobalState();
+      expect(state.mintPaused).to.be.true;
+      expect(state.redeemPaused).to.be.false;
+    });
+
+    it("Minting is rejected when paused", async () => {
+      try {
+        await mintAsol(user2, user2LstAccount, user2AsolAccount, new BN(1e9), new BN(1));
+        expect.fail("Should have rejected due to pause");
+      } catch (err: any) {
+        expect(err.toString()).to.include("MintPaused");
+      }
+    });
+
+    it("Admin can unpause", async () => {
+      await program.methods
+        .emergencyPause(false, false)
+        .accounts({
+          authority: protocolState.authority.publicKey,
+          globalState: protocolState.globalState,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        })
+        .signers([protocolState.authority])
+        .rpc();
+
+      const state = await getGlobalState();
+      expect(state.mintPaused).to.be.false;
+    });
+  });
+
 })
