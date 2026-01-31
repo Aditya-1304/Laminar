@@ -528,4 +528,50 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       expect(state.treasury.toBase58()).to.equal(protocolState.authority.publicKey.toBase58());
     });
   });
+
+  describe("2. Mint aSOL (Equity Injection)", () => {
+    before(async () => {
+      const userSetup = await setupUser(100); // Gives 100 lst to user
+      user1 = userSetup.user;
+      user1LstAccount = userSetup.lstAccount;
+      user1AsolAccount = userSetup.asolAccount;
+    });
+
+    it("Mints aSOL at 1:1 rate for first deposit", async () => {
+      const lstAmount = new BN(10 * LAMPORTS_PER_SOL);
+      const minAsolOut = new BN(1);
+
+      const stateBefore = await getGlobalState();
+      expect(stateBefore.asolSupply.toNumber()).to.equal(0);
+
+      await mintAsol(user1, user1LstAccount, user1AsolAccount, lstAmount, minAsolOut);
+
+      const stateAfter = await getGlobalState();
+
+      const expectedSolValue = lstAmount.mul(MOCK_LST_TO_SOL_RATE).div(SOL_PRECISION);
+      const [expectedAsolNet, expectedFee] = applyFee(expectedSolValue, ASOL_MINT_FEE_BPS);
+
+      expect(stateAfter.totalLstAmount.toNumber()).to.equal(lstAmount.toNumber());
+
+      const expectedAsolGross = expectedSolValue;
+      expect(stateAfter.asolSupply.toNumber()).to.equal(expectedAsolGross.toNumber());
+
+      const userAsolBalance = await getAccount(connection, user1AsolAccount);
+      expect(Number(userAsolBalance.amount)).to.equal(expectedAsolNet.toNumber());
+    })
+
+    it("Increases TVL on aSOL mint", async () => {
+      const state = await getGlobalState();
+      const tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+
+      const expectedTvl = new BN(10 * LAMPORTS_PER_SOL).mul(MOCK_LST_TO_SOL_RATE).div(SOL_PRECISION);
+      expect(tvl.toNumber()).to.equal(expectedTvl.toNumber());
+    });
+
+    it("Maintains infinite CR when no debt exists", async () => {
+      const cr = await calculateCR();
+
+      expect(cr.toNumber()).to.equal(Number.MAX_SAFE_INTEGER);
+    });
+  })
 })
