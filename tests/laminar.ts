@@ -1026,7 +1026,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       await mintAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
         new BN(5 * LAMPORTS_PER_SOL), new BN(1));
 
-      // Moderate price drop (NOT insolvency - just stress)
+      // Moderate price drop
       // At $50 SOL with 30 LST equity + 5 LST debt, should still be solvent
       await updateMockPrices(new BN(70_000_000), MOCK_LST_TO_SOL_RATE); // $70 SOL (not extreme)
 
@@ -1039,14 +1039,11 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       const smallRedemption = new BN(Number(userAmusdBalance.amount) / 4);
 
       if (smallRedemption.gt(new BN(0))) {
-        // Should succeed - amUSD redemption should work
         try {
           await redeemAmUSD(testUser, userSetup.lstAccount, userSetup.amusdAccount,
             smallRedemption, new BN(100_000)); // reasonable min_lst_out
           console.log("  amUSD redemption succeeded during price stress");
         } catch (err: any) {
-          // If it fails for slippage or min amount, that's OK - the point is it shouldn't
-          // fail for "InsolventProtocol" since amUSD is senior tranche
           expect(err.toString()).to.not.include("InsolventProtocol");
         }
       }
