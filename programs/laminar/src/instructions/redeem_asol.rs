@@ -38,8 +38,8 @@ pub fn handler(
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(asol_amount > 0, LaminarError::ZeroAmount);
-  require!(min_lst_out > 0, LaminarError::ZeroAmount);
-  require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
+  // require!(min_lst_out > 0, LaminarError::ZeroAmount);
+  // require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
   msg!("aSOL to redeem: {}", asol_amount);
 
@@ -69,6 +69,10 @@ pub fn handler(
   };
 
   msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
+
+  require!(min_lst_out > 0, LaminarError::ZeroAmount);
+  require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
+
 
   let sol_value_gross = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
     .ok_or(LaminarError::MathOverflow)?;
