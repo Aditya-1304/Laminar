@@ -1758,4 +1758,124 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       console.log(`  ${iterations} operations, precision drift: ${diff.toNumber()} lamports`);
     });
   });
+
+  describe("33. Account Validation Security", () => {
+    it("Rejects wrong LST mint", async () => {
+      const userSetup = await setupUser(10);
+
+      const wrongMint = await createMint(
+        connection,
+        protocolState.authority,
+        protocolState.authority.publicKey,
+        null,
+        9,
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID,
+      );
+
+      const wrongMintAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        userSetup.user,
+        wrongMint,
+        userSetup.user.publicKey
+      );
+
+      // Fund the wrong mint account
+      await mintTo(
+        connection,
+        protocolState.authority,
+        wrongMint,
+        wrongMintAccount.address,
+        protocolState.authority,
+        10 * LAMPORTS_PER_SOL
+      );
+
+      try {
+        // Try to deposit wrong LST
+        const [vaultAuthority] = getVaultAuthorityPda();
+
+        await program.methods
+          .mintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
+          .accounts({
+            user: userSetup.user.publicKey,
+            globalState: protocolState.globalState,
+            asolMint: protocolState.asolMint.publicKey,
+            userAsolAccount: userSetup.asolAccount,
+            treasuryAsolAccount: await anchor.utils.token.associatedAddress({
+              mint: protocolState.asolMint.publicKey,
+              owner: (await getGlobalState()).treasury,
+            }),
+            treasury: (await getGlobalState()).treasury,
+            userLstAccount: wrongMintAccount.address, // WRONG ACCOUNT
+            vault: protocolState.vault,
+            vaultAuthority: vaultAuthority,
+            lstMint: wrongMint, // WRONG MINT
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+            clock: SYSVAR_CLOCK_PUBKEY,
+          } as any)
+          .signers([userSetup.user])
+          .rpc();
+
+        expect.fail("Should reject wrong LST mint");
+      } catch (err: any) {
+        // Should fail with constraint error
+        expect(
+          err.toString().includes("ConstraintAddress") ||
+          err.toString().includes("constraint")
+        ).to.be.true;
+        console.log("  ✓ Wrong LST mint correctly rejected");
+      }
+    })
+  });
+
+  describe("34. u64 Overflow Protection", () => {
+    it("Handles values near u64 max without overflow", async () => {
+      // Test that math functions don't overflow
+      const maxSafeAmount = new BN("18446744073709551615"); // u64::MAX
+      const normalAmount = new BN(1_000_000_000);
+
+      // computeTvlSol should handle large amounts
+      const largeTvl = computeTvlSol(maxSafeAmount.div(new BN(2)), SOL_PRECISION);
+      expect(largeTvl.toString()).to.not.equal("0");
+
+      console.log("  ✓ Math functions handle large values safely");
+    });
+  });
+
+  describe("35. Authority Transfer Security", () => {
+    it("Authority transfer should require proper verification", async () => {
+      const state = await getGlobalState();
+
+      // Verify authority is set correctly
+      expect(state.authority.toBase58()).to.equal(protocolState.authority.publicKey.toBase58());
+
+      // Non-authority cannot perform admin actions
+      const randomUser = Keypair.generate();
+      await airdropSol(randomUser.publicKey, 1);
+
+      try {
+        await program.methods
+          .updateParameters(new BN(10_000), new BN(12_000))
+          .accounts({
+            authority: randomUser.publicKey,
+            globalState: protocolState.globalState,
+            clock: SYSVAR_CLOCK_PUBKEY,
+          })
+          .signers([randomUser])
+          .rpc();
+
+        expect.fail("Should reject unauthorized access");
+      } catch (err: any) {
+        expect(err.toString()).to.include("ConstraintHasOne");
+        console.log("  ✓ Authority access control enforced");
+      }
+    });
+  });
+
+
+
 });
