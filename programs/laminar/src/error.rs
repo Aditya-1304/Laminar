@@ -80,4 +80,7 @@ pub enum LaminarError {
 
   #[msg("Invalid parameter value provided")]
   InvalidParameter,
-}
+
+  #[msg("aSOL supply is zero while equity exists; bootstrap required before minting")]
+  EquityWithoutAsolSupply,
+} 

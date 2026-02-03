@@ -34,6 +34,7 @@ pub fn handler(
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
+  let target_cr_bps = global_state.target_cr_bps;
 
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
@@ -59,14 +60,9 @@ pub fn handler(
 
   let old_equity = compute_equity_sol(old_tvl, current_liability);
 
-  let current_nav = match nav_asol(old_tvl, current_liability, current_asol_supply) {
-    Some(nav) if nav >= MIN_NAV_LAMPORTS => nav,
-    Some(nav) if nav > 0 && nav < MIN_NAV_LAMPORTS => {
-      msg!("NAV too low for safe redemption: {} lamports", nav);
-      return Err(LaminarError::InsolventProtocol.into());
-    },
-    _=> return Err(LaminarError::InsolventProtocol.into()),
-  };
+  let current_nav = nav_asol(old_tvl, current_liability, current_asol_supply)
+    .ok_or(LaminarError::InsolventProtocol)?;
+  require!(current_nav > 0, LaminarError::InsolventProtocol);
 
   msg!("Current aSOL NAV: {} lamports per aSOL", current_nav);
 
@@ -82,7 +78,9 @@ pub fn handler(
   let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let (lst_net, lst_fee) = apply_fee(lst_gross, ASOL_REDEEM_FEE_BPS)
+  let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
+  let fee_bps = fee_bps_increase_when_low(ASOL_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
+  let (lst_net, lst_fee) = apply_fee(lst_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST gross: {}", lst_gross);
@@ -117,8 +115,6 @@ pub fn handler(
   if new_liability > 0 {
     let new_cr = compute_cr_bps(new_tvl, new_liability);
     msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
-
-    assert_cr_above_minimum(new_cr, ctx.accounts.global_state.min_cr_bps)?;
   } else {
     msg!("No debt exists - CR check skipped");
   }

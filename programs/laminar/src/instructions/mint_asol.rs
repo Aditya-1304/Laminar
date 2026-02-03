@@ -33,7 +33,7 @@ pub fn handler(
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
-  let min_cr_bps = global_state.min_cr_bps;
+  let target_cr_bps = global_state.target_cr_bps;
 
   // Input validations
   require!(!global_state.mint_paused, LaminarError::MintPaused);
@@ -57,6 +57,7 @@ pub fn handler(
   };
 
   let old_equity = compute_equity_sol(old_tvl, current_liability);
+  let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
 
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
@@ -64,14 +65,12 @@ pub fn handler(
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
 
-  let current_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
-
-
   let current_nav = if current_asol_supply == 0 {
-    SOL_PRECISION  // First mint: 1 aSOL = 1 SOL
+    // First mint: only allowed if there is no pre-existing equity
+    require!(old_equity == 0, LaminarError::EquityWithoutAsolSupply);
+    SOL_PRECISION  // 1 aSOL = 1 SOL
   } else {
-    nav_asol(current_tvl, current_liability, current_asol_supply)
+    nav_asol(old_tvl, current_liability, current_asol_supply)
       .ok_or(LaminarError::MathOverflow)?
   };
 
@@ -89,7 +88,8 @@ pub fn handler(
   msg!("aSOL gross (before fee): {}", asol_gross);
 
   // Apply fee
-  let (asol_net, fee) = apply_fee(asol_gross, ASOL_MINT_FEE_BPS)
+  let fee_bps = fee_bps_decrease_when_low(ASOL_MINT_FEE_BPS, old_cr_bps, target_cr_bps);
+  let (asol_net, fee) = apply_fee(asol_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("Fee: {} aSOL", fee);
@@ -119,15 +119,10 @@ pub fn handler(
     0
   };
 
-  // CR check (only if there's debt)
+  // CR check is intentionally not enforced on aSOL mints (equity injection)
   if new_liability > 0 {
     let new_cr = compute_cr_bps(new_tvl, new_liability);
     msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
-    assert_cr_above_minimum(new_cr, min_cr_bps)?;
-    
-    if new_equity == 0 {
-      return Err(LaminarError::InsolventProtocol.into());
-    }
   } else {
     msg!("Post-mint CR: infinite (no debt exists)");
   }

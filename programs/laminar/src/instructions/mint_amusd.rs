@@ -39,6 +39,7 @@ pub fn handler(
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let min_cr_bps = global_state.min_cr_bps;
+  let target_cr_bps = global_state.target_cr_bps;
   
   // Input validations
   require!(!global_state.mint_paused, LaminarError::MintPaused);
@@ -75,7 +76,8 @@ pub fn handler(
     .ok_or(LaminarError::MathOverflow)?;
 
   // Fee is taken in amUSD terms (per whitepaper: amUSD_net = amUSD_minted − fee)
-  let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, AMUSD_MINT_FEE_BPS)
+  let fee_bps = fee_bps_increase_when_low(AMUSD_MINT_FEE_BPS, old_cr_bps, target_cr_bps);
+  let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("amUSD gross: {}", amusd_gross);

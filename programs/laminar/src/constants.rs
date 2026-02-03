@@ -19,6 +19,9 @@ pub const AMUSD_REDEEM_FEE_BPS: u64 = 25;       // 0.25%
 pub const ASOL_MINT_FEE_BPS: u64 = 30;          // 0.3%
 pub const ASOL_REDEEM_FEE_BPS: u64 = 15;        // 0.15%
 
+// Dynamic fee multiplier cap when CR < target (1x = 10_000 bps)
+pub const MAX_FEE_MULTIPLIER_BPS: u64 = 40_000; // 4x max
+
 // SLIPPAGE LIMITS 
 pub const MAX_SLIPPAGE_BPS: u64 = 500;          // 5% max slippage
 

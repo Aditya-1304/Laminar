@@ -13,6 +13,7 @@ pub use crate::constants::{
     MIN_AMUSD_MINT,
     MIN_ASOL_MINT,
     MIN_NAV_LAMPORTS,
+    MAX_FEE_MULTIPLIER_BPS,
 };
 
 
@@ -142,7 +143,7 @@ pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
 /// 
 /// # Returns
 /// NAV in lamports per aSOL unit
-/// Returns None if TVL < liability (prevents negative equity propagation)
+/// Returns Some(0) if TVL < liability (prevents negative equity propagation)
 /// Returns None if aSOL supply is 0 (edge case: first mint)
 pub fn nav_asol(tvl: u64, liability: u64, asol_supply: u64) -> Option<u64> {
     if asol_supply == 0 {
@@ -153,6 +154,48 @@ pub fn nav_asol(tvl: u64, liability: u64, asol_supply: u64) -> Option<u64> {
     
     // nav_asol = equity / asol_supply (both in lamports)
     mul_div_down(equity, SOL_PRECISION, asol_supply)
+}
+
+/// Dynamic fee adjustment when CR deteriorates (CR < target)
+/// - For actions that should become MORE expensive when CR is low
+/// - Returns base fee when CR >= target or if CR is infinite (no debt)
+pub fn fee_bps_increase_when_low(
+  base_fee_bps: u64,
+  cr_bps: u64,
+  target_cr_bps: u64,
+) -> u64 {
+  if base_fee_bps == 0 {
+    return 0;
+  }
+  if cr_bps == u64::MAX || cr_bps >= target_cr_bps {
+    return base_fee_bps;
+  }
+
+  // Scale up: fee = base * (target / cr)
+  let scaled = mul_div_up(base_fee_bps, target_cr_bps, cr_bps).unwrap_or(base_fee_bps);
+  let max_fee = mul_div_down(base_fee_bps, MAX_FEE_MULTIPLIER_BPS, BPS_PRECISION)
+    .unwrap_or(u64::MAX);
+
+  scaled.min(max_fee)
+}
+
+/// Dynamic fee adjustment when CR deteriorates (CR < target)
+/// - For actions that should become CHEAPER when CR is low
+/// - Returns base fee when CR >= target or if CR is infinite (no debt)
+pub fn fee_bps_decrease_when_low(
+  base_fee_bps: u64,
+  cr_bps: u64,
+  target_cr_bps: u64,
+) -> u64 {
+  if base_fee_bps == 0 {
+    return 0;
+  }
+  if cr_bps == u64::MAX || cr_bps >= target_cr_bps {
+    return base_fee_bps;
+  }
+
+  // Scale down: fee = base * (cr / target)
+  mul_div_down(base_fee_bps, cr_bps, target_cr_bps).unwrap_or(0)
 }
 
 /// Apply a fee to an amount and return net amount + fee
@@ -380,5 +423,37 @@ mod tests {
         let nav = nav_amusd(sol_price).unwrap();
         
         assert_eq!(nav, SOL_PRECISION / 100);
+    }
+
+    #[test]
+    fn test_fee_bps_increase_when_low() {
+        let base = 100u64;
+        let target = 15_000u64;
+
+        // At or above target, fee stays base
+        assert_eq!(fee_bps_increase_when_low(base, 15_000, target), base);
+        assert_eq!(fee_bps_increase_when_low(base, 20_000, target), base);
+
+        // Below target, fee scales up: base * (target / cr)
+        assert_eq!(fee_bps_increase_when_low(base, 10_000, target), 150);
+
+        // Extreme low CR should be capped by MAX_FEE_MULTIPLIER_BPS (4x)
+        assert_eq!(fee_bps_increase_when_low(base, 1_000, target), 400);
+    }
+
+    #[test]
+    fn test_fee_bps_decrease_when_low() {
+        let base = 100u64;
+        let target = 15_000u64;
+
+        // At or above target, fee stays base
+        assert_eq!(fee_bps_decrease_when_low(base, 15_000, target), base);
+        assert_eq!(fee_bps_decrease_when_low(base, 20_000, target), base);
+
+        // Below target, fee scales down: base * (cr / target)
+        assert_eq!(fee_bps_decrease_when_low(base, 10_000, target), 66);
+
+        // Very low CR can reduce fee to zero
+        assert_eq!(fee_bps_decrease_when_low(base, 0, target), 0);
     }
 }

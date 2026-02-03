@@ -31,6 +31,7 @@ pub fn handler(
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
+  let target_cr_bps = global_state.target_cr_bps;
 
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
@@ -59,7 +60,8 @@ pub fn handler(
   let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let (lst_net, lst_fee) = apply_fee(lst_gross, AMUSD_REDEEM_FEE_BPS)
+  let fee_bps = fee_bps_decrease_when_low(AMUSD_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
+  let (lst_net, lst_fee) = apply_fee(lst_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 
   msg!("LST gross: {}", lst_gross);
@@ -96,8 +98,9 @@ pub fn handler(
 
   let new_equity = compute_equity_sol(new_tvl, new_liability);
 
-  // NOTE: No CR minimum check here because amUSD redemption mathematically
-  // ALWAYS improves CR (liability decreases proportionally with TVL).
+  // NOTE: No CR minimum check here because amUSD redemption improves or
+  // maintains CR when the protocol is solvent (TVL >= liability).
+  // Insolvent redemptions are blocked by the no-negative-equity invariant.
   // Per whitepaper Section 17.4: "When CR < 150%, redemption fee decreases"
   // to ENCOURAGE debt repayment during stress - not block it.
   let new_cr = if new_amusd_supply > 0 {
