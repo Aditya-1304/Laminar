@@ -69,7 +69,19 @@ pub struct GlobalState {
   pub mock_sol_price_usd: u64,
 
   pub mock_lst_to_sol_rate: u64,
-  
+
+  pub fee_amusd_mint_bps: u64,
+
+  pub fee_amusd_redeem_bps: u64,
+
+  pub fee_asol_mint_bps: u64,
+
+  pub fee_asol_redeem_bps: u64,
+
+  pub fee_min_multiplier_bps: u64,
+
+  pub fee_max_multiplier_bps: u64,
+
   pub _reserved: [u64; 2],
 }
 
@@ -94,6 +106,12 @@ impl GlobalState {
     // 1 + // locked
     8 + // mock_sol_price_usd
     8 + // mock_lst_to_sol_rate
+    8 + // fee_amusd_mint_bps
+    8 + // fee_amusd_redeem_bps
+    8 + // fee_asol_mint_bps
+    8 + // fee_asol_redeem_bps
+    8 + // fee_min_multiplier_bps
+    8 + // fee_max_mutliplier_bps
     16; // _reserved (2 * 8 = 16)
 }
 
@@ -175,6 +193,12 @@ mod tests {
       redeem_paused: false,
       mock_sol_price_usd: 0,
       mock_lst_to_sol_rate: 0,
+      fee_amusd_mint_bps: 0,
+      fee_amusd_redeem_bps: 0,
+      fee_asol_mint_bps: 0,
+      fee_asol_redeem_bps: 0,
+      fee_min_multiplier_bps: 0,
+      fee_max_multiplier_bps: 0,
       _reserved: [0; 2],
     };
     
