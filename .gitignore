@@ -8,3 +8,7 @@ test-ledger
 plan.md
 project_laminar_full_technical_whitepaper_draft_v_0.md
 hylo-docs-gemini.md
+__pycache__
+.github
+analysis 
+analysis copy
