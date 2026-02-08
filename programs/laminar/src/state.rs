@@ -82,6 +82,13 @@ pub struct GlobalState {
 
   pub fee_max_multiplier_bps: u64,
 
+  /// Non-claimable reserve used to absorb determinsitic fixed-point dust.
+  pub rounding_reserve_lamports: u64,
+
+  /// Hard cap on rounding reserve growth.
+  /// If exceeded, instructions must revert until governance reconcilliation.
+  pub max_rounding_reserve_lamports: u64,
+
   pub _reserved: [u64; 2],
 }
 
@@ -112,6 +119,8 @@ impl GlobalState {
     8 + // fee_asol_redeem_bps
     8 + // fee_min_multiplier_bps
     8 + // fee_max_mutliplier_bps
+    8 + // rounding_reserve_lamports
+    8 + //max_rounding_reserve_lamports
     16; // _reserved (2 * 8 = 16)
 }
 
@@ -199,6 +208,8 @@ mod tests {
       fee_asol_redeem_bps: 0,
       fee_min_multiplier_bps: 0,
       fee_max_multiplier_bps: 0,
+      rounding_reserve_lamports: 0,
+      max_rounding_reserve_lamports: 0,
       _reserved: [0; 2],
     };
     

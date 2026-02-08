@@ -83,4 +83,10 @@ pub enum LaminarError {
 
   #[msg("aSOL supply is zero while equity exists; bootstrap required before minting")]
   EquityWithoutAsolSupply,
+
+  #[msg("Rounding reserve exceeded configured cap")]
+  RoundingReserveExceeded,
+
+  #[msg("Rounding reserve underflow while paying user-favoring rounding delta")]
+  RoundingReserveUnderflow,
 } 

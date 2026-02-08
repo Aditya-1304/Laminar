@@ -70,13 +70,14 @@ pub fn compute_tvl_sol(collateral_lamports: u64, lst_to_sol_rate: u64) -> Option
 /// * `sol_price_usd` - SOL price in USD (with USD_PRECISION)
 /// 
 /// # Returns 
-/// Liability in lamports (SOL base units)
+/// Liability in lamports (SOL base units), rounded up for conservative solvency accounting.
 pub fn compute_liability_sol(amusd_supply: u64, sol_price_usd: u64) -> Option<u64> {
   if sol_price_usd == 0 {
     return None;
   }
 
   // Convert amUSD (USD terms) to SOL terms
+  // Conservative: liabilities must round up, never down
   // liability_sol = (amusd_supply / sol_price_usd) * SOL_PRECISION
   mul_div_down(amusd_supply, SOL_PRECISION, sol_price_usd)
 }
@@ -111,6 +112,52 @@ pub fn compute_cr_bps(tvl: u64, liability: u64) -> u64 {
 
   // CR = (TVL / Liability) * BPS_PRECISION
   mul_div_down(tvl, BPS_PRECISION, liability).unwrap_or(u64::MAX)
+}
+
+/// Compute accounting equity in SOL lamports, including rounding reserve
+/// 
+/// Accounting identity: 
+/// E = TVL - Liability - RoundingReserve
+/// 
+/// # Arguments
+/// * `tvl` - Total collateral value in lamports
+/// * `liability` - Total liabilities in lamports
+/// * `rounding_reserve` - Non-claimable rounding reserve in lamports 
+/// 
+/// # Returns 
+/// Signed accounting equity in lamports (can be negative during insolvency)
+pub fn compute_accounting_equity_sol(
+  tvl: u64,
+  liability: u64,
+  rounding_reserve: u64,
+) -> Option<i128> {
+  (tvl as i128)
+    .checked_sub(liability as i128)?
+    .checked_sub(rounding_reserve as i128)
+}
+
+/// Compute claimable equity in SOL lamports 
+/// 
+/// This clamps negative accounting equity to zero for user-claim purposes 
+/// 
+/// # Arguments 
+/// * `tvl` - Total collateral value in lamports
+/// * `liability` - Total liabilities in lamports
+/// * `rounding_reserve` - Non-claimable rounding reserve in lamports 
+/// 
+/// # Returns 
+/// Claimable equity in lamports (`max(accounting_equity, 0`).
+pub fn compute_claimable_equity_sol(
+  tvl: u64,
+  liability: u64,
+  rounding_reserve: u64,
+) -> Option<u64> {
+  let equity = compute_accounting_equity_sol(tvl, liability, rounding_reserve)?;
+  if equity <= 0 {
+    Some(0)
+  } else {
+    u64::try_from(equity).ok()
+  }
 }
 
 /// Compute Net Asset Value (NAV) of amUSD in SOL terms

@@ -5,6 +5,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
 use crate::{error::LaminarError, state::*};
 use crate::math::{SOL_PRECISION};
+use crate::constants::DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS;
 
 pub fn handler(
   ctx: Context<Initialize>,
@@ -54,6 +55,8 @@ pub fn handler(
 
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
+  global_state.rounding_reserve_lamports = 0;
+  global_state.max_rounding_reserve_lamports = DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS;
 
   global_state._reserved = [0; 2];
 

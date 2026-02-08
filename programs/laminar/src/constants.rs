@@ -31,3 +31,6 @@ pub const DEFAULT_TARGET_CR_BPS: u64 = 15_000;  // 150%
 
 pub const MIN_TOLERANCE: u64 = 1_000;
 pub const TOLERANCE_BPS: u64 = 1;
+
+pub const DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS: u64 = 10_000;
+

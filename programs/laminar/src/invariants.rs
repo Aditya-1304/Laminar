@@ -82,10 +82,6 @@ pub fn assert_supply_nonzero(supply: u64, action_name: &str) -> Result<()> {
 }
 
 /// Protocol specific error codes 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

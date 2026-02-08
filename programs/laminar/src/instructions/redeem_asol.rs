@@ -96,7 +96,6 @@ pub fn handler(
     .checked_sub(total_lst_out)
     .ok_or(LaminarError::InsufficientCollateral)?;
 
-
   require!(
     new_lst_amount >= MIN_PROTOCOL_TVL || new_lst_amount == 0,
     LaminarError::BelowMinimumTVL
