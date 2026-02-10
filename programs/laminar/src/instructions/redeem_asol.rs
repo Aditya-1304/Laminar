@@ -64,6 +64,9 @@ pub fn handler(
 
   let old_claimable_equity = compute_claimable_equity_sol(old_tvl, current_liability, current_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 
+  let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
+  let solvent_mode = old_cr_bps >= BPS_PRECISION;
+
   let current_nav = nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
     .ok_or(LaminarError::InsolventProtocol)?;
   require!(current_nav > 0, LaminarError::InsolventProtocol);
@@ -73,16 +76,32 @@ pub fn handler(
   require!(min_lst_out > 0, LaminarError::ZeroAmount);
   require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
-
-  let sol_value_gross = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
+  let sol_value_down = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
     .ok_or(LaminarError::MathOverflow)?;
+  let lst_gross_down = mul_div_down(sol_value_down, SOL_PRECISION, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
+
+
+  // - Solvent (CR >= 100%): user-favoring rounding (up, up), reserve debited
+  // - Insolvent (CR < 100%): conservative rounding (down, down), no reserve debit
+  let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
+    let sol_value_up = mul_div_up(asol_amount, current_nav, SOL_PRECISION)
+      .ok_or(LaminarError::MathOverflow)?;
+    let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    let redeem_rounding_delta_lst = compute_rounding_delta_units(lst_gross_down, lst_gross_up)
+      .ok_or(LaminarError::MathOverflow)?;
+    let lamport_debit = lst_dust_to_lamports_up(redeem_rounding_delta_lst, lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    (sol_value_up, lst_gross_up, lamport_debit)
+  } else {
+    (sol_value_down, lst_gross_down, 0)
+  };
 
   msg!("SOL value (before fee): {}", sol_value_gross);
 
-  let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
-
-  let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
   let fee_bps = fee_bps_increase_when_low(ASOL_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
   let (lst_net, lst_fee) = apply_fee(lst_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
@@ -113,7 +132,10 @@ pub fn handler(
     .ok_or(LaminarError::InsufficientSupply)?;
 
   let new_liability = current_liability;  // aSOL redeem doesn't change liability
-  let new_rounding_reserve = current_rounding_reserve;
+  let new_rounding_reserve = debit_rounding_reserve(
+    current_rounding_reserve,
+    reserve_debit_from_redeem,
+  )?;
 
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 

@@ -130,6 +130,47 @@ pub fn assert_supply_nonzero(supply: u64, action_name: &str) -> Result<()> {
   Ok(())
 }
 
+/// Credit rounding reserve by deterministic dust amount.
+///
+/// # Arguments
+/// * `current_rounding_reserve` - Current reserve in lamports
+/// * `credit_lamports` - Lamports to add
+/// * `max_rounding_reserve` - Hard cap for reserve growth
+///
+/// # Returns
+/// Updated reserve value.
+pub fn credit_rounding_reserve(
+  current_rounding_reserve: u64,
+  credit_lamports: u64,
+  max_rounding_reserve: u64,
+) -> Result<u64> {
+  let next = current_rounding_reserve
+    .checked_add(credit_lamports)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  require!(next <= max_rounding_reserve, LaminarError::RoundingReserveExceeded);
+  Ok(next)
+}
+
+/// Debit rounding reserve when user-favoring rounding is applied.
+///
+/// # Arguments
+/// * `current_rounding_reserve` - Current reserve in lamports
+/// * `debit_lamports` - Lamports to subtract
+///
+/// # Returns
+/// Updated reserve value.
+pub fn debit_rounding_reserve(
+  current_rounding_reserve: u64,
+  debit_lamports: u64,
+) -> Result<u64> {
+  let next = current_rounding_reserve
+    .checked_sub(debit_lamports)
+    .ok_or(LaminarError::RoundingReserveUnderflow)?;
+
+  Ok(next)
+}
+
 /// Protocol specific error codes 
 #[cfg(test)]
 mod tests {
@@ -260,4 +301,29 @@ mod tests {
         let result = assert_supply_nonzero(0, "test_action");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_credit_rounding_reserve_valid() {
+        let result = credit_rounding_reserve(100, 25, 200).unwrap();
+        assert_eq!(result, 125);
+    }
+
+    #[test]
+    fn test_credit_rounding_reserve_cap_violation() {
+        let result = credit_rounding_reserve(180, 30, 200);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_debit_rounding_reserve_valid() {
+        let result = debit_rounding_reserve(100, 25).unwrap();
+        assert_eq!(result, 75);
+    }
+
+    #[test]
+    fn test_debit_rounding_reserve_underflow() {
+        let result = debit_rounding_reserve(10, 11);
+        assert!(result.is_err());
+    }
+
 }

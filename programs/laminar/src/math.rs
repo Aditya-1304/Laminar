@@ -79,7 +79,69 @@ pub fn compute_liability_sol(amusd_supply: u64, sol_price_usd: u64) -> Option<u6
   // Convert amUSD (USD terms) to SOL terms
   // Conservative: liabilities must round up, never down
   // liability_sol = (amusd_supply / sol_price_usd) * SOL_PRECISION
-  mul_div_down(amusd_supply, SOL_PRECISION, sol_price_usd)
+  mul_div_up(amusd_supply, SOL_PRECISION, sol_price_usd)
+}
+
+/// Compute determisnistic rounding delta between conservative and user outputs
+/// 
+/// # Arguments
+/// * `conservative_output` - output from conservative rounding and user (down)
+/// * `user_favoring_output` - output from user-favoring path (up)
+/// 
+/// # Returns
+/// Delta in output units (`user_favoring_output` - `conservative output`)
+pub fn compute_rounding_delta_units(
+  conservative_output: u64,
+  use_favouring_output: u64,
+) -> Option<u64> {
+  use_favouring_output.checked_sub(conservative_output)
+}
+
+
+/// Convert micro-USD dust to lamports with conservative round-up.
+///
+/// # Arguments
+/// * `usd_dust_micro` - Dust in micro-USD units
+/// * `sol_price_usd` - SOL price in micro-USD
+///
+/// # Returns
+/// Lamports equivalent, rounded up.
+pub fn usd_dust_to_lamports_up(usd_dust_micro: u64, sol_price_usd: u64) -> Option<u64> {
+  if usd_dust_micro == 0 {
+    return Some(0);
+  }
+
+  mul_div_up(usd_dust_micro, SOL_PRECISION, sol_price_usd)
+}
+
+/// Convert LST-unit dust to lamports with conservative round-up.
+///
+/// # Arguments
+/// * `lst_dust_units` - Dust in LST base units (9 decimals)
+/// * `lst_to_sol_rate` - LST->SOL rate (SOL_PRECISION scale)
+///
+/// # Returns
+/// Lamports equivalent, rounded up.
+pub fn lst_dust_to_lamports_up(lst_dust_units: u64, lst_to_sol_rate: u64) -> Option<u64> {
+  if lst_dust_units == 0 {
+    return Some(0);
+  }
+  mul_div_up(lst_dust_units, lst_to_sol_rate, SOL_PRECISION)
+}
+
+/// Convert aSOL-unit dust to lamports with conservative round-up.
+///
+/// # Arguments
+/// * `asol_dust_units` - Dust in aSOL base units (9 decimals)
+/// * `nav_lamports` - aSOL NAV in lamports per aSOL (SOL_PRECISION scale)
+///
+/// # Returns
+/// Lamports equivalent, rounded up.
+pub fn asol_dust_to_lamports_up(asol_dust_units: u64, nav_lamports: u64) -> Option<u64> {
+  if asol_dust_units == 0 {
+    return Some(0);
+  }
+  mul_div_up(asol_dust_units, nav_lamports, SOL_PRECISION)
 }
 
 /// Compute SOL-denominated equity owned by aSOL holders
@@ -526,4 +588,28 @@ mod tests {
         // Very low CR can reduce fee to zero
         assert_eq!(fee_bps_decrease_when_low(base, 0, target), 0);
     }
+
+    #[test]
+    fn test_compute_liability_sol_rounds_up_fractional_case() {
+        // $1 / $3 => 333_333_333.333... lamports, must ceil.
+        let amusd_supply = USD_PRECISION;
+        let sol_price = 3 * USD_PRECISION;
+
+        let liability = compute_liability_sol(amusd_supply, sol_price).unwrap();
+        assert_eq!(liability, 333_333_334);
+    }
+
+    #[test]
+    fn test_compute_rounding_delta_units() {
+        assert_eq!(compute_rounding_delta_units(100, 100), Some(0));
+        assert_eq!(compute_rounding_delta_units(100, 101), Some(1));
+    }
+
+    #[test]
+    fn test_usd_dust_to_lamports_up() {
+        // 1 micro-USD at $100/SOL => 10 lamports (ceil)
+        let lamports = usd_dust_to_lamports_up(1, 100 * USD_PRECISION).unwrap();
+        assert_eq!(lamports, 10);
+    }
+
 }

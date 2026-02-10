@@ -73,12 +73,27 @@ pub fn handler(
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
+  // used to measure deterministic dust
+  let sol_value_up = mul_div_up(lst_amount, lst_to_sol_rate, SOL_PRECISION)
+    .ok_or(LaminarError::MathOverflow)?;
+
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
 
   // Calculate gross amUSD based on full deposit
   let amusd_gross = mul_div_down(sol_value, sol_price_usd, SOL_PRECISION)
     .ok_or(LaminarError::MathOverflow)?;
+
+  // for reserve counting
+  let amusd_gross_up = mul_div_up(sol_value_up, sol_price_usd, SOL_PRECISION)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let mint_rounding_delta_usd = compute_rounding_delta_units(amusd_gross, amusd_gross_up)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let reserve_credit_from_mint = usd_dust_to_lamports_up(mint_rounding_delta_usd, sol_price_usd)
+    .ok_or(LaminarError::MathOverflow)?;
+
 
   // Fee is taken in amUSD terms (per whitepaper: amUSD_net = amUSD_minted − fee)
   let fee_bps = fee_bps_increase_when_low(AMUSD_MINT_FEE_BPS, old_cr_bps, target_cr_bps);
@@ -111,7 +126,7 @@ pub fn handler(
   let new_liability = compute_liability_sol(new_amusd_supply, sol_price_usd)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let new_rounding_reserve = current_rounding_reserve;
+  let new_rounding_reserve = credit_rounding_reserve(current_rounding_reserve, reserve_credit_from_mint, max_rounding_reserve)?;
 
   // Signed accounting equity (can be negative during insolvency)
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;

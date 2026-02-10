@@ -57,13 +57,35 @@ pub fn handler(
 
   let old_cr_bps = compute_cr_bps(old_tvl, old_liability);
 
-  let sol_value_gross = mul_div_down(amusd_amount, SOL_PRECISION, sol_price_used)
+  let solvent_mode = old_cr_bps >= BPS_PRECISION;
+
+  // Baseline conservative path, used for reserve-delta measurement
+  let sol_value_down = mul_div_down(amusd_amount, SOL_PRECISION, sol_price_used)
     .ok_or(LaminarError::MathOverflow)?;
+  let lst_gross_down = mul_div_down(sol_value_down, SOL_PRECISION, lst_to_sol_rate)
+  .ok_or(LaminarError::MathOverflow)?;
+
+  // - Solvent (CR >= 100%): user-favouring rounding (up, up), reserve debited
+  // - Insolvent (CR < 100%): conservative rounding (down, down), no reserve debit
+  let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
+    let sol_value_up = mul_div_up(amusd_amount, SOL_PRECISION, sol_price_used)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    let redeem_rounding_delta_lst = compute_rounding_delta_units(lst_gross_down, lst_gross_up)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    let lamport_debit = lst_dust_to_lamports_up(redeem_rounding_delta_lst, lst_to_sol_rate)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    (sol_value_up, lst_gross_up, lamport_debit)
+  } else {
+    (sol_value_down, lst_gross_down, 0)
+  };
 
   msg!("SOL value (before fee): {}", sol_value_gross);
-
-  let lst_gross = mul_div_down(sol_value_gross, SOL_PRECISION, lst_to_sol_rate)
-    .ok_or(LaminarError::MathOverflow)?;
 
   let fee_bps = fee_bps_decrease_when_low(AMUSD_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
   let (lst_net, lst_fee) = apply_fee(lst_gross, fee_bps)
@@ -101,7 +123,7 @@ pub fn handler(
     0
   };
 
-  let new_rounding_reserve = current_rounding_reserve;
+  let new_rounding_reserve = debit_rounding_reserve(current_rounding_reserve, reserve_debit_from_redeem)?;
 
   // signed accounting equity (can be negative under insolvency).
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;

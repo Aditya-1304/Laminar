@@ -67,6 +67,9 @@ pub fn handler(
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
+  let sol_value_up = mul_div_up(lst_amount, lst_to_sol_rate, SOL_PRECISION)
+    .ok_or(LaminarError::MathOverflow)?;
+
   msg!("LST deposited: {}", lst_amount);
   msg!("SOL value: {}", sol_value);
 
@@ -90,6 +93,22 @@ pub fn handler(
       .ok_or(LaminarError::MathOverflow)?
   };
 
+  let asol_reference_up = if current_asol_supply == 0 {
+    sol_value_up
+  } else {
+    mul_div_up(sol_value_up, SOL_PRECISION, current_nav)
+      .ok_or(LaminarError::MathOverflow)?
+  };
+
+  let mint_rounding_delta_asol = compute_rounding_delta_units(asol_gross, asol_reference_up)
+    .ok_or(LaminarError::MathOverflow)?;
+
+  let reserve_credit_from_mint = if current_asol_supply == 0 {
+    mint_rounding_delta_asol
+  } else {
+    asol_dust_to_lamports_up(mint_rounding_delta_asol, current_nav)
+      .ok_or(LaminarError::MathOverflow)?
+  };
   msg!("aSOL gross (before fee): {}", asol_gross);
 
   // Apply fee
@@ -117,7 +136,7 @@ pub fn handler(
 
   let new_liability = current_liability;  // aSOL mint doesn't change liability
   
-  let new_rounding_reserve = current_rounding_reserve;
+  let new_rounding_reserve = credit_rounding_reserve(current_rounding_reserve, reserve_credit_from_mint, max_rounding_reserve)?;
 
   // Signed accounting equity for invariant checking
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
