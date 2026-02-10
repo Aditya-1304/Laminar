@@ -35,6 +35,10 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
   let target_cr_bps = global_state.target_cr_bps;
+  let current_rounding_reserve = global_state.rounding_reserve_lamports;
+
+  // Configured hard cap for reserve growth
+  let max_rounding_reserve = global_state.max_rounding_reserve_lamports;
 
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
@@ -58,9 +62,9 @@ pub fn handler(
     0
   };
 
-  let old_equity = compute_equity_sol(old_tvl, current_liability);
+  let old_claimable_equity = compute_claimable_equity_sol(old_tvl, current_liability, current_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 
-  let current_nav = nav_asol(old_tvl, current_liability, current_asol_supply)
+  let current_nav = nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
     .ok_or(LaminarError::InsolventProtocol)?;
   require!(current_nav > 0, LaminarError::InsolventProtocol);
 
@@ -109,19 +113,21 @@ pub fn handler(
     .ok_or(LaminarError::InsufficientSupply)?;
 
   let new_liability = current_liability;  // aSOL redeem doesn't change liability
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+  let new_rounding_reserve = current_rounding_reserve;
 
-  if new_liability > 0 {
-    let new_cr = compute_cr_bps(new_tvl, new_liability);
-    msg!("Post-redeem CR: {}bps ({}%)", new_cr, new_cr / 100);
-  } else {
-    msg!("No debt exists - CR check skipped");
-  }
+  let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
+  let new_claimable_equity = compute_claimable_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
+  // Deterministic rounding bound for redeem_asol path:
+  // (aSOL->SOL, SOL->LST) => (k_lamports=2, k_usd=0)
+  let rounding_bound_lamports =
+    derive_rounding_bound_lamports(2, 0, sol_price_used)?;
 
   require!(
     ctx.accounts.user_asol_account.amount >= asol_amount,
     LaminarError::InsufficientSupply
-);
+  );
 
   // Verify vault has enough funds
   require!(
@@ -130,8 +136,8 @@ pub fn handler(
   );
 
   // Invariant checks
-  assert_no_negative_equity(new_tvl, new_liability)?;
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+  assert_rounding_reserve_within_cap(new_rounding_reserve, max_rounding_reserve)?;
+  assert_balance_sheet_holds(new_tvl, new_liability, new_accounting_equity, new_rounding_reserve, rounding_bound_lamports)?;
 
   // Update state BEFORE external calls
 
@@ -141,6 +147,7 @@ pub fn handler(
     global_state.total_lst_amount = new_lst_amount;
     global_state.asol_supply = new_asol_supply;
     global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+    global_state.rounding_reserve_lamports = new_rounding_reserve;
     msg!("State updated: LST={}, aSOL={}", new_lst_amount, new_asol_supply);
   }
 
@@ -226,8 +233,8 @@ pub fn handler(
     nav: current_nav,
     old_tvl,
     new_tvl,
-    old_equity,
-    new_equity,
+    old_equity: old_claimable_equity,
+    new_equity: new_claimable_equity,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
 

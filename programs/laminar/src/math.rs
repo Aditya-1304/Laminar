@@ -179,6 +179,29 @@ pub fn nav_amusd(sol_price_usd: u64) -> Option<u64> {
   mul_div_down(USD_PRECISION, SOL_PRECISION, sol_price_usd)
 }
 
+/// Compute reserve-aware NAV of aSOL using claimable equity.
+/// 
+/// # Arguments
+/// * `tvl` - Total value locked in lamports
+/// * `liability` - Total liabilties in lamports
+/// * `asol_supply` - Total aSOL supply (SOL_PRECISION units)
+/// 
+/// # Returns
+/// NAV in lamports per aSOL unit.
+/// Returns `None` if `asol_supply == 0` 
+pub fn nav_asol_with_reserve(
+  tvl: u64,
+  liability: u64,
+  rounding_reserve: u64,
+  asol_supply: u64,
+) -> Option<u64> {
+  if asol_supply == 0 {
+    return None;
+  }
+
+  let claimable_equity = compute_claimable_equity_sol(tvl, liability, rounding_reserve)?;
+  mul_div_down(claimable_equity, SOL_PRECISION, asol_supply)
+}
 
 /// Compute Net Asset Value (NAV) of aSOL
 /// aSOL represents residual equity after amUSD debt is satisfied

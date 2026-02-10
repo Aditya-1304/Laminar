@@ -40,6 +40,11 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let min_cr_bps = global_state.min_cr_bps;
   let target_cr_bps = global_state.target_cr_bps;
+
+  let current_rounding_reserve = global_state.rounding_reserve_lamports;
+
+  // Configured hard cap for reserve growth.
+  let max_rounding_reserve = global_state.max_rounding_reserve_lamports;
   
   // Input validations
   require!(!global_state.mint_paused, LaminarError::MintPaused);
@@ -106,16 +111,23 @@ pub fn handler(
   let new_liability = compute_liability_sol(new_amusd_supply, sol_price_usd)
     .ok_or(LaminarError::MathOverflow)?;
 
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+  let new_rounding_reserve = current_rounding_reserve;
+
+  // Signed accounting equity (can be negative during insolvency)
+  let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
   let new_cr = compute_cr_bps(new_tvl, new_liability);
 
-  msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
+  msg!("Post-min CR: {}bps ({}%)", new_cr, new_cr/100);
 
-  // Invariant checks
+  // Deterministic rounding bound for minr_amusd parh:
+  // (LST-> SOL, SOL-> USD) => (k_lamports = 2, k_usd = 1)
+  let rounding_bound_lamports= derive_rounding_bound_lamports(2, 1, sol_price_usd)?;
 
-  assert_no_negative_equity(new_tvl, new_liability)?;
+  assert_rounding_reserve_within_cap(new_rounding_reserve, max_rounding_reserve)?;
   assert_cr_above_minimum(new_cr, min_cr_bps)?;
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+  assert_balance_sheet_holds(new_tvl, new_liability, new_accounting_equity, new_rounding_reserve, rounding_bound_lamports)?;
+
 
   // State update
   {
@@ -123,6 +135,7 @@ pub fn handler(
     global_state.total_lst_amount = new_lst_amount;
     global_state.amusd_supply = new_amusd_supply;
     global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+    global_state.rounding_reserve_lamports = new_rounding_reserve;
     msg!("State updated: LST={}, amUSD={}", new_lst_amount, new_amusd_supply);
   }
 

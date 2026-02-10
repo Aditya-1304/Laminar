@@ -4,7 +4,55 @@
 
 use anchor_lang::prelude::*;
 
-use crate::{constants::MIN_TOLERANCE, error::LaminarError};
+use crate::{error::LaminarError, math::{SOL_PRECISION, mul_div_up}};
+
+
+/// Derive deterministic rounding bound in lamports for a given instruction path.
+/// 
+/// Bound formula: 
+/// rounding_bound_lamports = k_lamports + ceil(k_usd * lamports_per_microUDSD)
+/// where lamports_per_microUSD = ceil(SOL_PRECISION / sol_price_usd)
+/// 
+/// # Arguments
+/// * `k_lamports` - Number of fixed-point divisions with lamports output units
+/// * `k_usd` = Number of fixed-point divisons with microUsd output units
+/// * `sol_price_usd` - Conservative SOL price in microUSD
+/// 
+/// # Returns
+///  Deterministic per-instruction rounding bound in lamports.
+pub fn derive_rounding_bound_lamports(
+  k_lamports: u64,
+  k_usd: u64,
+  sol_price_usd: u64,
+) -> Result<u64> {
+  require!(sol_price_usd > 0, LaminarError::InvalidParameter);
+
+  let lamports_per_micro_usd = mul_div_up(SOL_PRECISION, 1, sol_price_usd).ok_or(LaminarError::ArithmeticOverflow)?;
+
+  let usd_component_u128 = (k_usd as u128)
+    .checked_mul(lamports_per_micro_usd as u128)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  let usd_component = u64::try_from(usd_component_u128)
+    .map_err(|_| LaminarError::ArithmeticOverflow)?;
+
+  let bound = k_lamports
+    .checked_add(usd_component)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  Ok(bound)
+}
+
+/// Assert reserve cap is not exceeded.
+/// 
+/// # Arguments 
+/// * `current` - Current rounding reserve in lamports
+/// * `max` - configured reserve cap in lamports
+pub fn assert_rounding_reserve_within_cap(current: u64, max: u64) -> Result<()> {
+  require!(current <= max, LaminarError::RoundingReserveExceeded);
+  Ok(())
+}
+
 
 /// Assert that the balance sheet equation holds: TVL = Liability + Equity
 /// This is the foundational invariant of the entire protocol
@@ -13,21 +61,22 @@ use crate::{constants::MIN_TOLERANCE, error::LaminarError};
 /// * `tvl` - Total value locked in lamports
 /// * `liability` - Total liabilities in lamports 
 /// * `equity` - Total equity in lamports
-pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, equity: u64) -> Result<()> {  // lamports
-  let total = liability.checked_add(equity)
+pub fn assert_balance_sheet_holds(tvl: u64, liability: u64, accounting_equity: i128, rounding_reserve: u64, rounding_bound_lamports: u64) -> Result<()> { 
+  let lhs = tvl as i128;
+
+  let rhs = (liability as i128)
+    .checked_add(accounting_equity)
+    .and_then(|v| v.checked_add(rounding_reserve as i128))
     .ok_or(LaminarError::ArithmeticOverflow)?;
 
-  // scale tolerance based on TVL magnitude
-  // 1 bps (0.01%) of TVL, minimum 1000 lamports
+  let diff: u128 = if lhs >= rhs {
+    (lhs - rhs) as u128
+  } else {
+      (rhs - lhs) as u128
+  };
 
-  let scale_tolerance = tvl
-    .checked_div(10_000)
-    .unwrap_or(MIN_TOLERANCE)
-    .max(MIN_TOLERANCE);
-
-  let diff = tvl.abs_diff(total);
   require!(
-    diff <= scale_tolerance,
+    diff <= rounding_bound_lamports as u128,
     LaminarError::BalanceSheetViolation
   );
   Ok(())
@@ -87,82 +136,115 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_balance_sheet_holds_valid() {
-        // Using realistic values (10 SOL TVL)
-        // TVL = 10 SOL, Liability = 5 SOL, Equity = 5 SOL
-        let tvl = 10_000_000_000u64;  // 10 SOL in lamports
-        let liability = 5_000_000_000u64;  // 5 SOL
-        let equity = 5_000_000_000u64;  // 5 SOL
-        // 10 = 5 + 5 ✓
-        let result = assert_balance_sheet_holds(tvl, liability, equity);
+    fn test_balance_sheet_holds_exact() {
+        // TVL = 10 SOL, L = 5 SOL, E = 5 SOL, R = 0
+        let tvl = 10_000_000_000u64;
+        let liability = 5_000_000_000u64;
+        let accounting_equity = 5_000_000_000i128;
+        let rounding_reserve = 0u64;
+        let rounding_bound_lamports = 0u64;
+
+        let result = assert_balance_sheet_holds(
+            tvl,
+            liability,
+            accounting_equity,
+            rounding_reserve,
+            rounding_bound_lamports,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_balance_sheet_violation() {
-        // Using realistic values where diff exceeds tolerance
-        // TVL = 10 SOL, Liability = 5 SOL, Equity = 4 SOL
-        // Diff = |10 - 9| = 1 SOL = 1_000_000_000 lamports
-        // Tolerance = 10_000_000_000 / 10_000 = 1_000_000 lamports (0.001 SOL)
-        // 1_000_000_000 > 1_000_000 → should fail
-        let tvl = 10_000_000_000u64;  // 10 SOL
-        let liability = 5_000_000_000u64;  // 5 SOL  
-        let equity = 4_000_000_000u64;  // 4 SOL (missing 1 SOL!)
-        let result = assert_balance_sheet_holds(tvl, liability, equity);
+        // TVL = 10 SOL, RHS = 9 SOL, diff = 1 SOL, bound = 0 => fail
+        let tvl = 10_000_000_000u64;
+        let liability = 5_000_000_000u64;
+        let accounting_equity = 4_000_000_000i128;
+        let rounding_reserve = 0u64;
+        let rounding_bound_lamports = 0u64;
+
+        let result = assert_balance_sheet_holds(
+            tvl,
+            liability,
+            accounting_equity,
+            rounding_reserve,
+            rounding_bound_lamports,
+        );
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_balance_sheet_within_tolerance() {
-        // Test that small rounding errors within tolerance pass
-        // TVL = 10 SOL, diff = 100 lamports (well within 1_000_000 tolerance)
+    fn test_balance_sheet_within_explicit_bound() {
+        // TVL = 10 SOL, RHS = TVL - 100 lamports, bound = 100 => pass
         let tvl = 10_000_000_000u64;
         let liability = 5_000_000_000u64;
-        let equity = 4_999_999_900u64;  // 100 lamports less
-        let result = assert_balance_sheet_holds(tvl, liability, equity);
+        let accounting_equity = 4_999_999_900i128;
+        let rounding_reserve = 0u64;
+        let rounding_bound_lamports = 100u64;
+
+        let result = assert_balance_sheet_holds(
+            tvl,
+            liability,
+            accounting_equity,
+            rounding_reserve,
+            rounding_bound_lamports,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
+    fn test_rounding_reserve_within_cap_valid() {
+        let result = assert_rounding_reserve_within_cap(5_000, 10_000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rounding_reserve_within_cap_fails() {
+        let result = assert_rounding_reserve_within_cap(10_001, 10_000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_derive_rounding_bound_lamports_basic() {
+        // price = 100 USD = 100_000_000 microUSD
+        // lamports_per_microUSD = ceil(1_000_000_000 / 100_000_000) = 10
+        // bound = k_lamports + k_usd * lamports_per_microUSD = 2 + 1*10 = 12
+        let bound = derive_rounding_bound_lamports(2, 1, 100_000_000).unwrap();
+        assert_eq!(bound, 12);
+    }
+
+    #[test]
     fn test_cr_above_minimum_valid() {
-        // CR = 15000 (150%), min = 13000 (130%)
         let result = assert_cr_above_minimum(15_000, 13_000);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_cr_above_minimum_exact() {
-        // CR = 13000 (130%), min = 13000 (130%)
-        // Exact match should pass
         let result = assert_cr_above_minimum(13_000, 13_000);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_cr_below_minimum() {
-        // CR = 12000 (120%), min = 13000 (130%)
         let result = assert_cr_above_minimum(12_000, 13_000);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_no_negative_equity_valid() {
-        // TVL = 200, Liability = 100
         let result = assert_no_negative_equity(200, 100);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_no_negative_equity_exact() {
-        // TVL = 100, Liability = 100
-        // Zero equity is valid
         let result = assert_no_negative_equity(100, 100);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_negative_equity_fails() {
-        // TVL = 80, Liability = 100
         let result = assert_no_negative_equity(80, 100);
         assert!(result.is_err());
     }

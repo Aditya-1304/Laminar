@@ -35,6 +35,11 @@ pub fn handler(
   let current_asol_supply = global_state.asol_supply;
   let target_cr_bps = global_state.target_cr_bps;
 
+  let current_rounding_reserve = global_state.rounding_reserve_lamports;
+
+  // Configured hard cap for reserve growth.
+  let max_rounding_reserve = global_state.max_rounding_reserve_lamports;
+
   // Input validations
   require!(!global_state.mint_paused, LaminarError::MintPaused);
   require!(lst_amount > 0, LaminarError::ZeroAmount);
@@ -56,7 +61,7 @@ pub fn handler(
     0
   };
 
-  let old_equity = compute_equity_sol(old_tvl, current_liability);
+  let old_claimable_equity = compute_claimable_equity_sol(old_tvl, current_liability, current_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
   let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
 
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
@@ -67,10 +72,10 @@ pub fn handler(
 
   let current_nav = if current_asol_supply == 0 {
     // First mint: only allowed if there is no pre-existing equity
-    require!(old_equity == 0, LaminarError::EquityWithoutAsolSupply);
+    require!(old_claimable_equity == 0, LaminarError::EquityWithoutAsolSupply);
     SOL_PRECISION  // 1 aSOL = 1 SOL
   } else {
-    nav_asol(old_tvl, current_liability, current_asol_supply)
+    nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
       .ok_or(LaminarError::MathOverflow)?
   };
 
@@ -111,27 +116,35 @@ pub fn handler(
     .ok_or(LaminarError::MathOverflow)?;
 
   let new_liability = current_liability;  // aSOL mint doesn't change liability
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+  
+  let new_rounding_reserve = current_rounding_reserve;
 
-  let leverage_multiple = if new_equity > 0 {
-    mul_div_down(new_tvl, 100, new_equity).unwrap_or(0)
+  // Signed accounting equity for invariant checking
+  let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
+  // Claimable equity for user-facing events
+  let new_claimable_equity = compute_claimable_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
+  let leverage_multiple = if new_claimable_equity > 0 {
+    mul_div_down(new_tvl, 100, new_claimable_equity).unwrap_or(0)
   } else {
     0
   };
 
-  // CR check is intentionally not enforced on aSOL mints (equity injection)
-  if new_liability > 0 {
-    let new_cr = compute_cr_bps(new_tvl, new_liability);
-    msg!("Post-mint CR: {}bps ({}%)", new_cr, new_cr / 100);
-  } else {
-    msg!("Post-mint CR: infinite (no debt exists)");
-  }
+  // Deterministic rounding bound for mint_asol path:
+  // (LST->SOL, SOL->aSOL) => (k_lamports=2, k_usd=0)
+  let rounding_bound_lamports =
+    derive_rounding_bound_lamports(2, 0, sol_price_used)?;
 
-  // INVARIANTS
-  assert_no_negative_equity(new_tvl, new_liability)?;
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
-
-
+  // Invariant checks
+  assert_rounding_reserve_within_cap(new_rounding_reserve, max_rounding_reserve)?;
+  assert_balance_sheet_holds(
+    new_tvl,
+    new_liability,
+    new_accounting_equity,
+    new_rounding_reserve,
+    rounding_bound_lamports,
+  )?;
   // Update state BEFORE external calls
 
   {
@@ -139,6 +152,7 @@ pub fn handler(
     global_state.total_lst_amount = new_lst_amount;
     global_state.asol_supply = new_asol_supply;
     global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+    global_state.rounding_reserve_lamports = new_rounding_reserve;
     msg!("State updated: LST={}, aSOL={}", new_lst_amount, new_asol_supply);
   }
 
@@ -224,8 +238,8 @@ pub fn handler(
     nav: current_nav,
     old_tvl,
     new_tvl,
-    old_equity,
-    new_equity,
+    old_equity: old_claimable_equity,
+    new_equity: new_claimable_equity,
     leverage_multiple,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });

@@ -33,6 +33,11 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let target_cr_bps = global_state.target_cr_bps;
 
+  let current_rounding_reserve = global_state.rounding_reserve_lamports;
+
+  // Configured hard cap for reserve growth.
+  let max_rounding_reserve = global_state.max_rounding_reserve_lamports;
+
   // Validations
   require!(!global_state.redeem_paused, LaminarError::RedeemPaused);
   require!(amusd_amount > 0, LaminarError::ZeroAmount);
@@ -96,12 +101,15 @@ pub fn handler(
     0
   };
 
-  let new_equity = compute_equity_sol(new_tvl, new_liability);
+  let new_rounding_reserve = current_rounding_reserve;
+
+  // signed accounting equity (can be negative under insolvency).
+  let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 
   // NOTE: No CR minimum check here because amUSD redemption improves or
   // maintains CR when the protocol is solvent (TVL >= liability).
   // Insolvent redemptions are blocked by the no-negative-equity invariant.
-  // Per whitepaper Section 17.4: "When CR < 150%, redemption fee decreases"
+  // When CR < 150%, redemption fee decreases"
   // to ENCOURAGE debt repayment during stress - not block it.
   let new_cr = if new_amusd_supply > 0 {
     let cr = compute_cr_bps(new_tvl, new_liability);
@@ -111,6 +119,10 @@ pub fn handler(
     msg!("All amUSD redeemed - CR check skipped");
     u64::MAX
   };
+
+  // Deterministic rounding bound for redeem_amusd path:
+  // (Usd -> SOL, SOL -> LST) => (k_lamports = 2, k_usd = 1)
+  let rounding_bound_lamports = derive_rounding_bound_lamports(2, 1, sol_price_used)?;
 
   require!(
     ctx.accounts.user_amusd_account.amount >= amusd_amount,
@@ -124,8 +136,8 @@ pub fn handler(
   );
 
   // Invariants check
-  assert_no_negative_equity(new_tvl, new_liability)?;
-  assert_balance_sheet_holds(new_tvl, new_liability, new_equity)?;
+  assert_rounding_reserve_within_cap(new_rounding_reserve, max_rounding_reserve)?;
+  assert_balance_sheet_holds(new_tvl, new_liability, new_accounting_equity, new_rounding_reserve, rounding_bound_lamports)?;
 
   // Update state BEFORE external calls
 
@@ -135,6 +147,7 @@ pub fn handler(
     global_state.total_lst_amount = new_lst_amount;
     global_state.amusd_supply = new_amusd_supply;
     global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+    global_state.rounding_reserve_lamports = new_rounding_reserve;
     msg!("State updated: LST={}, amUSD={}", new_lst_amount, new_amusd_supply);
   }
 
