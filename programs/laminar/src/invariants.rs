@@ -171,6 +171,18 @@ pub fn debit_rounding_reserve(
   Ok(next)
 }
 
+/// Uses stack height instead of instruction index. so normal setup 
+/// instructions in the same tnx is allowed
+pub fn assert_not_cpi_context()-> Result<()> {
+  let stack_height = anchor_lang::solana_program::instruction::get_stack_height();
+
+  require!(
+    stack_height <= anchor_lang::solana_program::instruction::TRANSACTION_LEVEL_STACK_HEIGHT, LaminarError::InvalidCPIContext
+  );
+
+  Ok(())
+}
+
 /// Protocol specific error codes 
 #[cfg(test)]
 mod tests {

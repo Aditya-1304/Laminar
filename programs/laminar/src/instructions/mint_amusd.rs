@@ -6,13 +6,13 @@ use anchor_lang::prelude::program_option::COption;
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
-use anchor_lang::solana_program::sysvar::instructions::ID as IX_SYSVAR;
 use crate::constants::AMUSD_MINT_FEE_BPS;
 use crate::events::AmUSDMinted;
 use crate::state::*;
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::instructions::sync_exchange_rate::sync_exchange_rate_in_place;
 
 
 pub fn handler(
@@ -22,16 +22,17 @@ pub fn handler(
 ) -> Result<()> {
   // All validations before any state changes
   
-  // Prevent CPI attacks (instruction must be top-level)
-  let ix_sysvar = &ctx.accounts.instruction_sysvar;
-  let current_index = anchor_lang::solana_program::sysvar::instructions::load_current_index_checked(
-    &ix_sysvar.to_account_info()
-  )?;
-  require!(current_index == 0, LaminarError::InvalidCPIContext);
+  assert_not_cpi_context()?;
 
-  let global_state = &ctx.accounts.global_state;
-
+  // sync first
+  {
+  let global_state = &mut ctx.accounts.global_state;
   global_state.validate_version()?;
+  sync_exchange_rate_in_place(global_state, ctx.accounts.clock.slot)?;
+  }
+
+  // read only borrow
+  let global_state = &ctx.accounts.global_state;
   
   // Capture current state values for calculations
   let sol_price_usd = global_state.mock_sol_price_usd;
@@ -325,10 +326,6 @@ pub struct MintAmUSD<'info> {
   pub token_program: Interface<'info, TokenInterface>,
   pub associated_token_program: Program<'info, AssociatedToken>,
   pub system_program: Program<'info, System>,
-
-  /// CHECK: Instruction introspection
-  #[account(address = IX_SYSVAR)]
-  pub instruction_sysvar: UncheckedAccount<'info>,
 
   pub clock: Sysvar<'info, Clock>,
 }

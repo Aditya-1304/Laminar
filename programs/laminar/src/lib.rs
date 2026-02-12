@@ -153,6 +153,10 @@ pub mod laminar {
         
         Ok(())
     }
+
+    pub fn sync_exchange_rate(ctx: Context<SyncExchangeRate>) -> Result<()> {
+        instructions::sync_exchange_rate::handler(ctx)
+    }
 }
 
 #[derive(Accounts)]

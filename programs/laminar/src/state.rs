@@ -154,6 +154,17 @@ impl GlobalState {
     8 + // fee_max_mutliplier_bps
     8 + // rounding_reserve_lamports
     8 + //max_rounding_reserve_lamports
+    8 + // uncertainity_index_bps
+    8 + // flash_loan_utilization_bps
+    8 + // flash_outstanding_lamports
+    8 + // max_oracle_staleness_slots
+    8 + // max_conf_bps
+    8 + // uncertainity_max_bos
+    8 + // max_lst_stale_epochs
+    8 + // nav_floor_lamports
+    8 + // max_asol_mint_per_round
+    8 + // last_tvl_update_slot
+    8 + // last_oracle_update_slot
     16; // _reserved (2 * 8 = 16)
 }
 
@@ -217,34 +228,46 @@ mod tests {
   fn test_global_state_size() {
     // Create a default instance and serialize it to verify size
     let state = GlobalState {
-      version: 0,
-      bump: 0,
-      vault_authority_bump: 0,
-      operation_counter: 0,
-      authority: Pubkey::default(),
-      amusd_mint: Pubkey::default(),
-      asol_mint: Pubkey::default(),
-      treasury: Pubkey::default(),
-      supported_lst_mint: Pubkey::default(),
-      total_lst_amount: 0,
-      amusd_supply: 0,
-      asol_supply: 0,
-      min_cr_bps: 0,
-      target_cr_bps: 0,
-      mint_paused: false,
-      redeem_paused: false,
-      mock_sol_price_usd: 0,
-      mock_lst_to_sol_rate: 0,
-      fee_amusd_mint_bps: 0,
-      fee_amusd_redeem_bps: 0,
-      fee_asol_mint_bps: 0,
-      fee_asol_redeem_bps: 0,
-      fee_min_multiplier_bps: 0,
-      fee_max_multiplier_bps: 0,
-      rounding_reserve_lamports: 0,
-      max_rounding_reserve_lamports: 0,
-      _reserved: [0; 2],
-    };
+    version: 0,
+    bump: 0,
+    vault_authority_bump: 0,
+    operation_counter: 0,
+    authority: Pubkey::default(),
+    amusd_mint: Pubkey::default(),
+    asol_mint: Pubkey::default(),
+    treasury: Pubkey::default(),
+    supported_lst_mint: Pubkey::default(),
+    total_lst_amount: 0,
+    amusd_supply: 0,
+    asol_supply: 0,
+    min_cr_bps: 0,
+    target_cr_bps: 0,
+    mint_paused: false,
+    redeem_paused: false,
+    mock_sol_price_usd: 0,
+    mock_lst_to_sol_rate: 0,
+    fee_amusd_mint_bps: 0,
+    fee_amusd_redeem_bps: 0,
+    fee_asol_mint_bps: 0,
+    fee_asol_redeem_bps: 0,
+    fee_min_multiplier_bps: 0,
+    fee_max_multiplier_bps: 0,
+    rounding_reserve_lamports: 0,
+    max_rounding_reserve_lamports: 0,
+    uncertainty_index_bps: 0,
+    flash_loan_utilization_bps: 0,
+    flash_outstanding_lamports: 0,
+    max_oracle_staleness_slots: 0,
+    max_conf_bps: 0,
+    uncertainty_max_bps: 0,
+    max_lst_stale_epochs: 0,
+    nav_floor_lamports: 0,
+    max_asol_mint_per_round: 0,
+    last_tvl_update_slot: 0,
+    last_oracle_update_slot: 0,
+    _reserved: [0; 2],
+  };
+
     
     // Verify the manual LEN calculation matches what Borsh would serialize
     // The actual serialized size should be LEN - 8 (discriminator is added by Anchor)

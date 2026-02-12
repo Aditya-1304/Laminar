@@ -6,6 +6,7 @@ pub mod mint_amusd;
 pub mod redeem_amusd;
 pub mod mint_asol;
 pub mod redeem_asol;
+pub mod sync_exchange_rate;
 
 #[allow(ambiguous_glob_reexports)]
 pub use initialize::*;
@@ -17,3 +18,5 @@ pub use redeem_amusd::*;
 pub use mint_asol::*;
 #[allow(ambiguous_glob_reexports)]
 pub use redeem_asol::*;
+#[allow(ambiguous_glob_reexports)]
+pub use sync_exchange_rate::*;
