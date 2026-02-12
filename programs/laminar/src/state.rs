@@ -89,6 +89,39 @@ pub struct GlobalState {
   /// If exceeded, instructions must revert until governance reconcilliation.
   pub max_rounding_reserve_lamports: u64,
 
+  /// Uncertainty signal derived from oracle confidence.
+  pub uncertainty_index_bps: u64,
+
+  /// Current flash-loan utilization signal.
+  pub flash_loan_utilization_bps: u64,
+
+  /// Flash liquidity currently out during router operations.
+  pub flash_outstanding_lamports: u64,
+
+  /// Oracle freshness bound in slots.
+  pub max_oracle_staleness_slots: u64,
+
+  /// Oracle confidence bound in bps.
+  pub max_conf_bps: u64,
+
+  /// Cap on uncertainty multiplier.
+  pub uncertainty_max_bps: u64,
+
+  /// LST staleness bound in epochs.
+  pub max_lst_stale_epochs: u64,
+
+  /// NAV floor for conversion safety.
+  pub nav_floor_lamports: u64,
+
+  /// Per-round cap on aSOL mint during conversion paths.
+  pub max_asol_mint_per_round: u64,
+
+  /// Last slot when cached TVL/LST rate was refreshed.
+  pub last_tvl_update_slot: u64,
+
+  /// Last slot when oracle inputs were refreshed.
+  pub last_oracle_update_slot: u64,
+
   pub _reserved: [u64; 2],
 }
 

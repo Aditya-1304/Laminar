@@ -3,7 +3,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
-use crate::{error::LaminarError, state::*};
+use crate::{constants::{AMUSD_MINT_FEE_BPS, AMUSD_REDEEM_FEE_BPS, ASOL_MINT_FEE_BPS, ASOL_REDEEM_FEE_BPS, DEFAULT_FEE_MAX_MULTIPLIER_BPS, DEFAULT_FEE_MIN_MULTIPLIER_BPS, DEFAULT_MAX_ASOL_MINT_PER_ROUND, DEFAULT_MAX_CONF_BPS, DEFAULT_MAX_LST_STALE_EPOCHS, DEFAULT_MAX_ORACLE_STALENESS_SLOTS, DEFAULT_NAV_FLOOR_LAMPORTS, DEFAULT_UNCERTAINTY_MAX_BPS}, error::LaminarError, state::*};
 use crate::math::{SOL_PRECISION};
 use crate::constants::DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS;
 
@@ -57,6 +57,25 @@ pub fn handler(
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
   global_state.rounding_reserve_lamports = 0;
   global_state.max_rounding_reserve_lamports = DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS;
+
+  global_state.fee_amusd_mint_bps = AMUSD_MINT_FEE_BPS;
+  global_state.fee_amusd_redeem_bps = AMUSD_REDEEM_FEE_BPS;
+  global_state.fee_asol_mint_bps = ASOL_MINT_FEE_BPS;
+  global_state.fee_asol_redeem_bps = ASOL_REDEEM_FEE_BPS;
+  global_state.fee_min_multiplier_bps = DEFAULT_FEE_MIN_MULTIPLIER_BPS;
+  global_state.fee_max_multiplier_bps = DEFAULT_FEE_MAX_MULTIPLIER_BPS;
+
+  global_state.uncertainty_index_bps = 0;
+  global_state.flash_loan_utilization_bps = 0;
+  global_state.flash_outstanding_lamports = 0;
+  global_state.max_oracle_staleness_slots = DEFAULT_MAX_ORACLE_STALENESS_SLOTS;
+  global_state.max_conf_bps = DEFAULT_MAX_CONF_BPS;
+  global_state.uncertainty_max_bps = DEFAULT_UNCERTAINTY_MAX_BPS;
+  global_state.max_lst_stale_epochs = DEFAULT_MAX_LST_STALE_EPOCHS;
+  global_state.nav_floor_lamports = DEFAULT_NAV_FLOOR_LAMPORTS;
+  global_state.max_asol_mint_per_round = DEFAULT_MAX_ASOL_MINT_PER_ROUND;
+  global_state.last_tvl_update_slot = ctx.accounts.clock.slot;
+  global_state.last_oracle_update_slot = ctx.accounts.clock.slot;
 
   global_state._reserved = [0; 2];
 
