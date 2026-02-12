@@ -76,6 +76,9 @@ pub fn handler(
   global_state.max_asol_mint_per_round = DEFAULT_MAX_ASOL_MINT_PER_ROUND;
   global_state.last_tvl_update_slot = ctx.accounts.clock.slot;
   global_state.last_oracle_update_slot = ctx.accounts.clock.slot;
+  global_state.mock_sol_price_usd = mock_sol_price_usd;
+  global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
+  global_state.mock_oracle_confidence_usd = 0;
 
   global_state._reserved = [0; 2];
 

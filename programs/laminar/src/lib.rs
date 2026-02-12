@@ -99,6 +99,7 @@ pub mod laminar {
         ctx: Context<UpdateMockPrices>,
         new_sol_price_usd: u64,
         new_lst_to_sol_rate: u64,
+        new_oracle_confidence_usd: u64,
     ) -> Result<()> {
         let global_state = &mut ctx.accounts.global_state;
         
@@ -111,6 +112,17 @@ pub mod laminar {
         global_state.mock_sol_price_usd = new_sol_price_usd;
         global_state.mock_lst_to_sol_rate = new_lst_to_sol_rate;
         global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+        global_state.mock_oracle_confidence_usd = new_oracle_confidence_usd;
+        global_state.last_oracle_update_slot = ctx.accounts.clock.slot;
+
+        msg!(
+            "Oracle snapshot updated: slot={}, price={}, conf={}, lst_rate={}",
+            ctx.accounts.clock.slot,
+            new_sol_price_usd,
+            new_oracle_confidence_usd,
+            new_lst_to_sol_rate
+        );
+
         
         emit!(crate::events::OraclePriceUpdated {
             authority: ctx.accounts.authority.key(),

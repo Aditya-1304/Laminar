@@ -501,10 +501,11 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
    */
   async function updateMockPrices(
     newSolPriceUsd: BN,
-    newLstToSolRate: BN
+    newLstToSolRate: BN,
+    newOracleConfidenceUsd: BN = new BN(0),
   ): Promise<string> {
     return await program.methods
-      .updateMockPrices(newSolPriceUsd, newLstToSolRate)
+      .updateMockPrices(newSolPriceUsd, newLstToSolRate, newOracleConfidenceUsd)
       .accounts({
         authority: protocolState.authority.publicKey,
         globalState: protocolState.globalState,
@@ -513,6 +514,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       .signers([protocolState.authority])
       .rpc();
   }
+
 
   /**
    * Calculate expected CR from state

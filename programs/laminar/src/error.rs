@@ -89,4 +89,10 @@ pub enum LaminarError {
 
   #[msg("Rounding reserve underflow while paying user-favoring rounding delta")]
   RoundingReserveUnderflow,
+
+  #[msg("Oracle snapshot is stale - refresh oracle before pricing actions")]
+  OraclePriceStale,
+
+  #[msg("Oracle confidence is above configured max_conf_bps")]
+  OracleConfidenceTooHigh,
 } 

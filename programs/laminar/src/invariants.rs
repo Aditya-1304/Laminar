@@ -4,7 +4,7 @@
 
 use anchor_lang::prelude::*;
 
-use crate::{error::LaminarError, math::{SOL_PRECISION, mul_div_up}};
+use crate::{error::LaminarError, math::{BPS_PRECISION, SOL_PRECISION, mul_div_up}};
 
 
 /// Derive deterministic rounding bound in lamports for a given instruction path.
@@ -183,6 +183,43 @@ pub fn assert_not_cpi_context()-> Result<()> {
   Ok(())
 }
 
+/// Assert oracle snapshot freshness and confidence bounds before pricing.
+///
+/// # Arguments
+/// * `current_slot` - Current slot from Clock sysvar
+/// * `last_oracle_update_slot` - Slot of last oracle snapshot update
+/// * `max_oracle_staleness_slots` - Max allowed oracle age in slots
+/// * `oracle_price_usd` - Oracle price in micro-USD
+/// * `oracle_confidence_usd` - Oracle confidence width in micro-USD
+/// * `max_conf_bps` - Max allowed confidence ratio in bps
+pub fn assert_oracle_freshness_and_confidence(
+  current_slot: u64,
+  last_oracle_update_slot: u64,
+  max_oracle_staleness_slots: u64,
+  oracle_price_usd: u64,
+  oracle_confidence_usd: u64,
+  max_conf_bps: u64,
+) -> Result<()> {
+  require!(oracle_price_usd > 0, LaminarError::InvalidParameter);
+  require!(current_slot >= last_oracle_update_slot, LaminarError::InvalidParameter);
+
+  let oracle_age_slots = current_slot
+    .checked_sub(last_oracle_update_slot)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  require!(
+    oracle_age_slots <= max_oracle_staleness_slots,
+    LaminarError::OraclePriceStale
+  );
+
+  let conf_bps = mul_div_up(oracle_confidence_usd, BPS_PRECISION, oracle_price_usd)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  require!(conf_bps <= max_conf_bps, LaminarError::OracleConfidenceTooHigh);
+
+  Ok(())
+}
+
 /// Protocol specific error codes 
 #[cfg(test)]
 mod tests {
@@ -337,5 +374,45 @@ mod tests {
         let result = debit_rounding_reserve(10, 11);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_oracle_freshness_and_confidence_valid() {
+        let result = assert_oracle_freshness_and_confidence(
+            1_000, // current_slot
+            900,   // last_update
+            150,   // max staleness
+            100_000_000, // price
+            1_000_000,   // conf = 1%
+            150,          // max 1.5%
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_oracle_freshness_fails_when_stale() {
+        let result = assert_oracle_freshness_and_confidence(
+            1_000,
+            800,
+            150,
+            100_000_000,
+            1_000_000,
+            150,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oracle_confidence_fails_when_too_high() {
+        let result = assert_oracle_freshness_and_confidence(
+            1_000,
+            900,
+            150,
+            100_000_000,
+            2_000_000, // 2%
+            150,       // 1.5% max
+        );
+        assert!(result.is_err());
+    }
+
 
 }

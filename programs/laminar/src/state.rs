@@ -122,6 +122,8 @@ pub struct GlobalState {
   /// Last slot when oracle inputs were refreshed.
   pub last_oracle_update_slot: u64,
 
+  pub mock_oracle_confidence_usd: u64,
+
   pub _reserved: [u64; 2],
 }
 
@@ -165,6 +167,7 @@ impl GlobalState {
     8 + // max_asol_mint_per_round
     8 + // last_tvl_update_slot
     8 + // last_oracle_update_slot
+    8 + // mock_oracle_confidence_usd
     16; // _reserved (2 * 8 = 16)
 }
 
@@ -265,6 +268,7 @@ mod tests {
     max_asol_mint_per_round: 0,
     last_tvl_update_slot: 0,
     last_oracle_update_slot: 0,
+    mock_oracle_confidence_usd: 0,
     _reserved: [0; 2],
   };
 

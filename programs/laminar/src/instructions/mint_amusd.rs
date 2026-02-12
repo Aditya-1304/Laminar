@@ -33,6 +33,15 @@ pub fn handler(
 
   // read only borrow
   let global_state = &ctx.accounts.global_state;
+
+  assert_oracle_freshness_and_confidence(
+    ctx.accounts.clock.slot, 
+    global_state.last_oracle_update_slot, 
+    global_state.max_oracle_staleness_slots, 
+    global_state.mock_sol_price_usd, 
+    global_state.mock_oracle_confidence_usd, 
+    global_state.max_conf_bps
+  )?;
   
   // Capture current state values for calculations
   let sol_price_usd = global_state.mock_sol_price_usd;
