@@ -1527,6 +1527,54 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       console.log(`  Treasury aSOL redemption fee received: ${feeReceived / 1e9} aSOL`);
     });
 
+    it("Treasury receives amUSD redemption fees", async () => {
+      const state = await getGlobalState();
+      const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.amusdMint.publicKey,
+        owner: state.treasury,
+      });
+
+      const balanceBefore = await getAccount(connection, treasuryAmusdAccount)
+        .then(acc => Number(acc.amount))
+        .catch(() => 0);
+
+      // Keep protocol clearly solvent so redeem fee is non-zero.
+      const userSetup = await setupUser(120);
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(50 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(2 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      const userAmusdBalance = await getAccount(connection, userSetup.amusdAccount);
+      const redeemAmount = new BN(Math.floor(Number(userAmusdBalance.amount) / 2));
+
+      await redeemAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        redeemAmount,
+        new BN(100_000)
+      );
+
+      const balanceAfter = await getAccount(connection, treasuryAmusdAccount)
+        .then(acc => Number(acc.amount));
+
+      const feeReceived = balanceAfter - balanceBefore;
+      expect(feeReceived).to.be.greaterThan(0);
+
+      console.log(`  Treasury amUSD redemption fee received: ${feeReceived / 1e6} amUSD`);
+    });
+
   });
 
   describe("22. Operation Counter Monotonicity", () => {
@@ -1620,41 +1668,66 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   });
 
   describe("25. aSOL Redemption CR Impact", () => {
-    it("aSOL redemption can violate CR if too aggressive", async () => {
-      // Setup: Create a protocol state near minimum CR
-      const userSetup = await setupUser(200);
+    it("aSOL redemption enforces post-state minimum CR", async () => {
+      const userSetup = await setupUser(250);
 
-      // Add equity
-      await mintAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
-        new BN(50 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(50 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
 
-      // Add significant debt
-      await mintAmUSD(userSetup.user, userSetup.lstAccount, userSetup.amusdAccount,
-        new BN(30 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(120 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
 
       const crBefore = await calculateCR();
       console.log(`  CR before aSOL redemption: ${crBefore.toNumber()} bps`);
 
-      // Try to redeem large aSOL amount which would tank CR
       const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
-      const largeRedemption = new BN(Number(userAsolBalance.amount) * 0.8); // 80%
+      const largeRedemption = new BN(Math.floor(Number(userAsolBalance.amount) * 0.8)); // 80%
 
       try {
-        await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
-          largeRedemption, new BN(100_000));
+        await redeemAsol(
+          userSetup.user,
+          userSetup.lstAccount,
+          userSetup.asolAccount,
+          largeRedemption,
+          new BN(100_000)
+        );
+
         const crAfter = await calculateCR();
         console.log(`  CR after aSOL redemption: ${crAfter.toNumber()} bps`);
-        // Redemptions are allowed; only insolvency should block.
+
+        // If redemption succeeds, CR-post gate must still hold.
+        expect(crAfter.gte(MIN_CR_BPS)).to.be.true;
         expect(crAfter.lte(crBefore)).to.be.true;
       } catch (err: any) {
-        // Should NOT fail due to CR minimum; only insolvency or collateral shortfall is acceptable
-        const acceptableErrors = ["NegativeEquity", "InsolventProtocol", "InsufficientCollateral"];
-        const hasAcceptableError = acceptableErrors.some(e => err.toString().includes(e));
-        expect(hasAcceptableError).to.be.true;
-        console.log("  Large aSOL redemption rejected due to insolvency/collateral limits");
+        // CR gate is now a valid/expected blocker.
+        const expectedErrors = [
+          "CollateralRatioTooLow",
+          "InsolventProtocol",
+          "InsufficientCollateral",
+        ];
+
+        const matched = expectedErrors.some((e) => err.toString().includes(e));
+        expect(matched).to.be.true;
+
+        if (err.toString().includes("CollateralRatioTooLow")) {
+          console.log("  aSOL redemption correctly blocked by CR_post gate");
+        } else {
+          console.log("  aSOL redemption blocked by stronger safety condition");
+        }
       }
     });
   });
+
 
   describe("26. Leverage Calculation Verification", () => {
     it("Leverage increases as debt increases", async () => {

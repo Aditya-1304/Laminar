@@ -68,49 +68,67 @@ pub fn handler(
   };
 
   let old_cr_bps = compute_cr_bps(old_tvl, old_liability);
+  let min_cr_bps = global_state.min_cr_bps;
 
-  let fee_bps = fee_bps_decrease_when_low(AMUSD_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
-  let (amusd_net_in, amusd_fee_in) = apply_fee(amusd_amount, fee_bps)
-    .ok_or(LaminarError::MathOverflow)?;
-  require!(amusd_net_in > 0, LaminarError::AmountTooSmall);
+  // Whitepaper requires drawdown-first when CR < min_cr_bps.
+  // Stability Pool is not implemented yet, so this pre-stability build
+  // deterministically treats the pool as exhausted (A == 0) and proceeds
+  // to haircut mode only when CR < 100%.
+  let post_drawdown_cr_bps = old_cr_bps;
+  if post_drawdown_cr_bps < min_cr_bps {
+    msg!("CR below min: drawdown-first required by spec; Stability Pool not implemented yet, treating pool as exhausted");
+  }
 
+  let insolvency_mode = post_drawdown_cr_bps < BPS_PRECISION;
+
+  let (amusd_net_in, amusd_fee_in) = if insolvency_mode {
+    (amusd_amount, 0u64)
+  } else {
+    let fee_bps = fee_bps_decrease_when_low(AMUSD_REDEEM_FEE_BPS, post_drawdown_cr_bps, target_cr_bps);
+    let (net_in, fee_in) = apply_fee(amusd_amount, fee_bps)
+      .ok_or(LaminarError::MathOverflow)?;
+    require!(net_in > 0, LaminarError::AmountTooSmall);
+    (net_in, fee_in)
+  };
+  
   msg!("amUSD input: {}", amusd_amount);
   msg!("amUSD fee (to treasury): {}", amusd_fee_in);
   msg!("amUSD net burn basis: {}", amusd_net_in);
 
-  let solvent_mode = old_cr_bps >= BPS_PRECISION;
-
-  // Baseline conservative path, used for reserve-delta measurement
-  let sol_value_down = mul_div_down(amusd_net_in, SOL_PRECISION, sol_price_used)
+  // Baseline par path (all-down)
+  let sol_value_par_down = mul_div_down(amusd_net_in, SOL_PRECISION, sol_price_used)
     .ok_or(LaminarError::MathOverflow)?;
-  let lst_gross_down = mul_div_down(sol_value_down, SOL_PRECISION, lst_to_sol_rate)
-  .ok_or(LaminarError::MathOverflow)?;
+  let lst_par_down = mul_div_down(sol_value_par_down, SOL_PRECISION, lst_to_sol_rate)
+    .ok_or(LaminarError::MathOverflow)?;
 
-  // - Solvent (CR >= 100%): user-favouring rounding (up, up), reserve debited
-  // - Insolvent (CR < 100%): conservative rounding (down, down), no reserve debit
-  let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
-    let sol_value_up = mul_div_up(amusd_net_in, SOL_PRECISION, sol_price_used)
+  let (sol_value_gross, lst_out, reserve_debit_from_redeem, rounding_k_lamports) = if insolvency_mode {
+    // Haircut path for CR < 100%
+    let haircut_bps = post_drawdown_cr_bps.min(BPS_PRECISION);
+
+    let sol_value_haircut = mul_div_down(sol_value_par_down, haircut_bps, BPS_PRECISION)
+      .ok_or(LaminarError::MathOverflow)?;
+    let lst_haircut = mul_div_down(sol_value_haircut, SOL_PRECISION, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
+    (sol_value_haircut, lst_haircut, 0u64, 3u64)
+  } else {
+    // Solvent path: user-favoring rounding, reserve debited by deterministic delta
+    let sol_value_up = mul_div_up(amusd_net_in, SOL_PRECISION, sol_price_used)
+      .ok_or(LaminarError::MathOverflow)?;
     let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
-    let redeem_rounding_delta_lst = compute_rounding_delta_units(lst_gross_down, lst_gross_up)
+    let redeem_rounding_delta_lst = compute_rounding_delta_units(lst_par_down, lst_gross_up)
       .ok_or(LaminarError::MathOverflow)?;
-
     let lamport_debit = lst_dust_to_lamports_up(redeem_rounding_delta_lst, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
-    (sol_value_up, lst_gross_up, lamport_debit)
-  } else {
-    (sol_value_down, lst_gross_down, 0)
+    (sol_value_up, lst_gross_up, lamport_debit, 2u64)
   };
 
-  msg!("SOL value (before fee): {}", sol_value_gross);
+  msg!("SOL value (after mode rules): {}", sol_value_gross);
 
-  let lst_out = lst_gross;
   require!(lst_out >= min_lst_out, LaminarError::SlippageExceeded);
-
   let total_lst_out = lst_out;
 
   // Calculate new state values
@@ -158,7 +176,7 @@ pub fn handler(
 
   // Deterministic rounding bound for redeem_amusd path:
   // (Usd -> SOL, SOL -> LST) => (k_lamports = 2, k_usd = 1)
-  let rounding_bound_lamports = derive_rounding_bound_lamports(2, 1, sol_price_used)?;
+  let rounding_bound_lamports = derive_rounding_bound_lamports(rounding_k_lamports, 1, sol_price_used)?;
 
   require!(
     ctx.accounts.user_amusd_account.amount >= amusd_amount,
@@ -176,8 +194,8 @@ pub fn handler(
   assert_balance_sheet_holds(new_tvl, new_liability, new_accounting_equity, new_rounding_reserve, rounding_bound_lamports)?;
 
   // Update state BEFORE external calls
-
-
+  
+  
   {
     let global_state = &mut ctx.accounts.global_state;
     global_state.total_lst_amount = new_lst_amount;
@@ -190,6 +208,23 @@ pub fn handler(
   
   // External calls (CPIs)
   
+  // Transfer fee to treasury
+  if amusd_fee_in > 0 {
+    let transfer_fee_accounts = TransferChecked {
+      from: ctx.accounts.user_amusd_account.to_account_info(),
+      mint: ctx.accounts.amusd_mint.to_account_info(),
+      to: ctx.accounts.treasury_amusd_account.to_account_info(),
+      authority: ctx.accounts.user.to_account_info(),
+    };
+
+    let cpi_ctx_treasury = CpiContext::new(
+      ctx.accounts.token_program.to_account_info(),
+      transfer_fee_accounts,
+    );
+
+    token_interface::transfer_checked(cpi_ctx_treasury, amusd_fee_in, ctx.accounts.amusd_mint.decimals)?;
+    msg!("Transferred {} amUSD fee to treasury", amusd_fee_in);
+  }
 
   // Burn amUSD from user
   let burn_accounts = Burn {
@@ -224,25 +259,6 @@ pub fn handler(
 
   token_interface::transfer_checked(cpi_ctx_user, lst_out, ctx.accounts.lst_mint.decimals)?;
   msg!("Transferred {} LST to user", lst_out);
-
-  // Transfer fee to treasury
-  if amusd_fee_in > 0 {
-    let transfer_fee_accounts = TransferChecked {
-      from: ctx.accounts.user_amusd_account.to_account_info(),
-      mint: ctx.accounts.amusd_mint.to_account_info(),
-      to: ctx.accounts.treasury_amusd_account.to_account_info(),
-      authority: ctx.accounts.user.to_account_info(),
-    };
-
-    let cpi_ctx_treasury = CpiContext::new_with_signer(
-      ctx.accounts.token_program.to_account_info(),
-      transfer_fee_accounts,
-      signer
-    );
-
-    token_interface::transfer_checked(cpi_ctx_treasury, amusd_fee_in, ctx.accounts.amusd_mint.decimals)?;
-    msg!("Transferred {} amUSD fee to treasury", amusd_fee_in);
-  }
   
   ctx.accounts.vault.reload()?;
   ctx.accounts.amusd_mint.reload()?;

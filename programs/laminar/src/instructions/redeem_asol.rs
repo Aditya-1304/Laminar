@@ -48,6 +48,7 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
   let target_cr_bps = global_state.target_cr_bps;
+  let min_cr_bps = global_state.min_cr_bps;
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
 
   // Configured hard cap for reserve growth
@@ -156,6 +157,20 @@ pub fn handler(
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 
   let new_claimable_equity = compute_claimable_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
+
+  let new_cr_bps = if new_liability > 0 {
+    compute_cr_bps(new_tvl, new_liability)
+  } else {
+      u64::MAX
+  };
+
+  assert_cr_above_minimum(new_cr_bps, min_cr_bps)?;
+
+  if new_cr_bps == u64::MAX {
+    msg!("Post-redeem CR: inf (no amUSD liability)");
+  } else {
+    msg!("Post-redeem CR: {}bps ({}%)", new_cr_bps, new_cr_bps / 100);
+  }
 
   // Deterministic rounding bound for redeem_asol path:
   // (aSOL->SOL, SOL->LST) => (k_lamports=2, k_usd=0)
