@@ -206,6 +206,24 @@ pub fn handler(
 
   // External calls (CPIs)
 
+  // Transfer fee to treasury
+  if asol_fee_in > 0 {
+    let transfer_treasury_accounts = TransferChecked {
+      from: ctx.accounts.user_asol_account.to_account_info(),
+      mint: ctx.accounts.asol_mint.to_account_info(),
+      to: ctx.accounts.treasury_asol_account.to_account_info(),
+      authority: ctx.accounts.user.to_account_info(),
+    };
+
+    let cpi_ctx_fee = CpiContext::new(
+      ctx.accounts.token_program.to_account_info(),
+      transfer_treasury_accounts,
+    );
+
+    token_interface::transfer_checked(cpi_ctx_fee, asol_fee_in, ctx.accounts.asol_mint.decimals)?;
+    msg!("Transferred {} aSOL fee to treasury", asol_fee_in);
+  }
+
   // Burn aSOL from user
   let burn_accounts = Burn {
     mint: ctx.accounts.asol_mint.to_account_info(),
@@ -241,23 +259,6 @@ pub fn handler(
   token_interface::transfer_checked(cpi_ctx_user, lst_out, ctx.accounts.lst_mint.decimals)?;
   msg!("Transferred {} LST to user", lst_out);
 
-  // Transfer fee to treasury
-  if asol_fee_in > 0 {
-    let transfer_treasury_accounts = TransferChecked {
-      from: ctx.accounts.user_asol_account.to_account_info(),
-      mint: ctx.accounts.asol_mint.to_account_info(),
-      to: ctx.accounts.treasury_asol_account.to_account_info(),
-      authority: ctx.accounts.user.to_account_info(),
-    };
-
-    let cpi_ctx_fee = CpiContext::new(
-      ctx.accounts.token_program.to_account_info(),
-      transfer_treasury_accounts,
-    );
-
-    token_interface::transfer_checked(cpi_ctx_fee, asol_fee_in, ctx.accounts.asol_mint.decimals)?;
-    msg!("Transferred {} aSOL fee to treasury", asol_fee_in);
-  }
 
   ctx.accounts.asol_mint.reload()?;
   ctx.accounts.vault.reload()?;

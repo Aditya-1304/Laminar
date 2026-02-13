@@ -76,6 +76,54 @@ pub fn handler(
   let old_claimable_equity = compute_claimable_equity_sol(old_tvl, current_liability, current_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
   let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
 
+  // Determinstic rounding bound for mint_asol path:
+  // (LST-> SOL, SOL-> aSOL) => (k_lamports=2, k_usd=0)
+  let rounding_bound_lamports = derive_rounding_bound_lamports(2, 0, sol_price_used)?;
+
+  // May be increased bt orphan-equity dust sweep in bootstrap mode.
+  let mut effective_rounding_reserve = current_rounding_reserve;
+
+  if current_asol_supply == 0 {
+    // Bootstrap must be solvent
+    require!(old_tvl >= current_liability, LaminarError::InsolventProtocol);
+
+    // Bootstrap requires TVL -= L + R (within deterministic rounding bound).
+    let lhs = old_tvl as i128;
+    let rhs = (current_liability as i128)
+      .checked_add(effective_rounding_reserve as i128)
+      .ok_or(LaminarError::MathOverflow)?;
+
+    let bootstrap_diff: u128 = if lhs > rhs {
+      (lhs - rhs) as u128
+    } else {
+      (rhs - lhs) as u128
+    };
+
+    require!(
+      bootstrap_diff <= rounding_bound_lamports as u128,
+      LaminarError::EquityWithoutAsolSupply
+    );
+
+    // Orphan-equity dust sweep:
+    // if claimable equity is dust-only, reclassify it into rounding reserve.
+    if old_claimable_equity > 0 {
+      effective_rounding_reserve = effective_rounding_reserve
+        .checked_add(old_claimable_equity)
+        .ok_or(LaminarError::MathOverflow)?;
+
+      require!(
+        effective_rounding_reserve <= max_rounding_reserve,
+        LaminarError::EquityWithoutAsolSupply
+      );
+
+      msg!(
+        "Bootstrap orphan-equity dust sweep: {} lamports -> rounding reserve",
+        old_claimable_equity
+      );
+    }
+
+  }
+
   let sol_value = compute_tvl_sol(lst_amount, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
@@ -86,8 +134,7 @@ pub fn handler(
   msg!("SOL value: {}", sol_value);
 
   let current_nav = if current_asol_supply == 0 {
-    // First mint: only allowed if there is no pre-existing equity
-    require!(old_claimable_equity == 0, LaminarError::EquityWithoutAsolSupply);
+    // First mint bootstrap price
     SOL_PRECISION  // 1 aSOL = 1 SOL
   } else {
     nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
@@ -148,7 +195,7 @@ pub fn handler(
 
   let new_liability = current_liability;  // aSOL mint doesn't change liability
   
-  let new_rounding_reserve = credit_rounding_reserve(current_rounding_reserve, reserve_credit_from_mint, max_rounding_reserve)?;
+  let new_rounding_reserve = credit_rounding_reserve(effective_rounding_reserve, reserve_credit_from_mint, max_rounding_reserve)?;
 
   // Signed accounting equity for invariant checking
   let new_accounting_equity = compute_accounting_equity_sol(new_tvl, new_liability, new_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
@@ -161,11 +208,6 @@ pub fn handler(
   } else {
     0
   };
-
-  // Deterministic rounding bound for mint_asol path:
-  // (LST->SOL, SOL->aSOL) => (k_lamports=2, k_usd=0)
-  let rounding_bound_lamports =
-    derive_rounding_bound_lamports(2, 0, sol_price_used)?;
 
   // Invariant checks
   assert_rounding_reserve_within_cap(new_rounding_reserve, max_rounding_reserve)?;
