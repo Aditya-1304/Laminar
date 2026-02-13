@@ -78,6 +78,16 @@ pub fn handler(
   let old_claimable_equity = compute_claimable_equity_sol(old_tvl, current_liability, current_rounding_reserve).ok_or(LaminarError::MathOverflow)?;
 
   let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
+
+  let fee_bps = fee_bps_increase_when_low(ASOL_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
+  let (asol_net_in, asol_fee_in) = apply_fee(asol_amount, fee_bps)
+    .ok_or(LaminarError::MathOverflow)?;
+  require!(asol_net_in > 0, LaminarError::AmountTooSmall);
+
+  msg!("aSOL input: {}", asol_amount);
+  msg!("aSOL fee (to treasury): {}", asol_fee_in);
+  msg!("aSOL net burn basis: {}", asol_net_in);
+
   let solvent_mode = old_cr_bps >= BPS_PRECISION;
 
   let current_nav = nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
@@ -89,16 +99,15 @@ pub fn handler(
   require!(min_lst_out > 0, LaminarError::ZeroAmount);
   require!(min_lst_out >= MIN_LST_DEPOSIT, LaminarError::AmountTooSmall);
 
-  let sol_value_down = mul_div_down(asol_amount, current_nav, SOL_PRECISION)
+  let sol_value_down = mul_div_down(asol_net_in, current_nav, SOL_PRECISION)
     .ok_or(LaminarError::MathOverflow)?;
   let lst_gross_down = mul_div_down(sol_value_down, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
 
-
   // - Solvent (CR >= 100%): user-favoring rounding (up, up), reserve debited
   // - Insolvent (CR < 100%): conservative rounding (down, down), no reserve debit
   let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
-    let sol_value_up = mul_div_up(asol_amount, current_nav, SOL_PRECISION)
+    let sol_value_up = mul_div_up(asol_net_in, current_nav, SOL_PRECISION)
       .ok_or(LaminarError::MathOverflow)?;
     let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
@@ -114,18 +123,12 @@ pub fn handler(
   };
 
   msg!("SOL value (before fee): {}", sol_value_gross);
+  msg!("LST gross to user: {}", lst_gross);
 
-  let fee_bps = fee_bps_increase_when_low(ASOL_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
-  let (lst_net, lst_fee) = apply_fee(lst_gross, fee_bps)
-    .ok_or(LaminarError::MathOverflow)?;
+  let lst_out = lst_gross;
+  require!(lst_out >= min_lst_out, LaminarError::SlippageExceeded);
 
-  msg!("LST gross: {}", lst_gross);
-  msg!("LST to user: {}", lst_net);
-  msg!("LST fee to treasury: {}", lst_fee);
-
-  require!(lst_net >= min_lst_out, LaminarError::SlippageExceeded);
-
-  let total_lst_out = lst_gross;
+  let total_lst_out = lst_out;
 
   // Calculate new state values
   let new_lst_amount = current_lst_amount
@@ -141,7 +144,7 @@ pub fn handler(
     .ok_or(LaminarError::MathOverflow)?;
 
   let new_asol_supply = current_asol_supply
-    .checked_sub(asol_amount)
+    .checked_sub(asol_net_in)
     .ok_or(LaminarError::InsufficientSupply)?;
 
   let new_liability = current_liability;  // aSOL redeem doesn't change liability
@@ -200,8 +203,8 @@ pub fn handler(
     burn_accounts
   );
 
-  token_interface::burn(cpi_ctx_burn, asol_amount)?;
-  msg!("Burned {} aSOL from user", asol_amount);
+  token_interface::burn(cpi_ctx_burn, asol_net_in)?;
+  msg!("Burned {} aSOL from user", asol_net_in);
 
   // Transfer LST from vault to user
   let seeds = &[VAULT_AUTHORITY_SEED, &[ctx.accounts.global_state.vault_authority_bump]];
@@ -220,26 +223,25 @@ pub fn handler(
     signer
   );
 
-  token_interface::transfer_checked(cpi_ctx_user, lst_net, ctx.accounts.lst_mint.decimals)?;
-  msg!("Transferred {} LST to user", lst_net);
+  token_interface::transfer_checked(cpi_ctx_user, lst_out, ctx.accounts.lst_mint.decimals)?;
+  msg!("Transferred {} LST to user", lst_out);
 
   // Transfer fee to treasury
-  if lst_fee > 0 {
+  if asol_fee_in > 0 {
     let transfer_treasury_accounts = TransferChecked {
-      from: ctx.accounts.vault.to_account_info(),
-      mint: ctx.accounts.lst_mint.to_account_info(),
-      to: ctx.accounts.treasury_lst_account.to_account_info(),
-      authority: ctx.accounts.vault_authority.to_account_info(),
+      from: ctx.accounts.user_asol_account.to_account_info(),
+      mint: ctx.accounts.asol_mint.to_account_info(),
+      to: ctx.accounts.treasury_asol_account.to_account_info(),
+      authority: ctx.accounts.user.to_account_info(),
     };
 
-    let cpi_ctx_treasury = CpiContext::new_with_signer(
+    let cpi_ctx_fee = CpiContext::new(
       ctx.accounts.token_program.to_account_info(),
       transfer_treasury_accounts,
-      signer
     );
 
-    token_interface::transfer_checked(cpi_ctx_treasury, lst_fee, ctx.accounts.lst_mint.decimals)?;
-    msg!("Transferred {} LST fee to treasury", lst_fee);
+    token_interface::transfer_checked(cpi_ctx_fee, asol_fee_in, ctx.accounts.asol_mint.decimals)?;
+    msg!("Transferred {} aSOL fee to treasury", asol_fee_in);
   }
 
   ctx.accounts.asol_mint.reload()?;
@@ -262,9 +264,9 @@ pub fn handler(
 
   emit!(AsolRedeemed {
     user: ctx.accounts.user.key(),
-    asol_burned: asol_amount,
-    lst_received: lst_net,
-    fee: lst_fee,
+    asol_burned: asol_net_in,
+    lst_received: lst_out,
+    fee: asol_fee_in,
     nav: current_nav,
     old_tvl,
     new_tvl,
@@ -315,12 +317,12 @@ pub struct RedeemAsol<'info> {
   #[account(
     init_if_needed,
     payer = user,
-    associated_token::mint = lst_mint,
+    associated_token::mint = asol_mint,
     associated_token::authority = treasury,
     associated_token::token_program = token_program,
-    // constraint = treasury_lst_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
+    // constraint = treasury_asol_account.close_authority == anchor_lang::solana_program::program_option::COption::None @ LaminarError::InvalidAccountState,
   )]
-  pub treasury_lst_account: Box<InterfaceAccount<'info, TokenAccount>>,
+  pub treasury_asol_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
   /// User's LST token account (receives redeemed LST)
   #[account(

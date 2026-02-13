@@ -385,8 +385,8 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
 
-    const treasuryLstAccount = await anchor.utils.token.associatedAddress({
-      mint: protocolState.lstMint,
+    const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.amusdMint.publicKey,
       owner: state.treasury,
     })
 
@@ -398,7 +398,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         amusdMint: protocolState.amusdMint.publicKey,
         userAmusdAccount: userAmusdAccount,
         treasury: state.treasury,
-        treasuryLstAccount: treasuryLstAccount,
+        treasuryAmusdAccount: treasuryAmusdAccount,
         userLstAccount: userLstAccount,
         vault: protocolState.vault,
         vaultAuthority: vaultAuthority,
@@ -468,8 +468,8 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
 
-    const treasuryLstAccount = await anchor.utils.token.associatedAddress({
-      mint: protocolState.lstMint,
+    const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.asolMint.publicKey,
       owner: state.treasury,
     });
 
@@ -481,7 +481,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         asolMint: protocolState.asolMint.publicKey,
         userAsolAccount: userAsolAccount,
         treasury: state.treasury,
-        treasuryLstAccount: treasuryLstAccount,
+        treasuryAsolAccount: treasuryAsolAccount,
         userLstAccount: userLstAccount,
         vault: protocolState.vault,
         vaultAuthority: vaultAuthority,
@@ -1499,14 +1499,14 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       console.log(`  Treasury aSOL fee received: ${feeReceived / 1e9} aSOL`);
     });
 
-    it("Treasury receives LST redemption fees", async () => {
+    it("Treasury receives aSOL redemption fees", async () => {
       const state = await getGlobalState();
-      const treasuryLstAccount = await anchor.utils.token.associatedAddress({
-        mint: protocolState.lstMint,
+      const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.asolMint.publicKey,
         owner: state.treasury,
       });
 
-      const balanceBefore = await getAccount(connection, treasuryLstAccount)
+      const balanceBefore = await getAccount(connection, treasuryAsolAccount)
         .then(acc => Number(acc.amount))
         .catch(() => 0);
 
@@ -1518,14 +1518,15 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       await redeemAsol(userSetup.user, userSetup.lstAccount, userSetup.asolAccount,
         new BN(Number(userAsolBalance.amount) / 2), new BN(100_000));
 
-      const balanceAfter = await getAccount(connection, treasuryLstAccount)
+      const balanceAfter = await getAccount(connection, treasuryAsolAccount)
         .then(acc => Number(acc.amount));
 
       const feeReceived = balanceAfter - balanceBefore;
       expect(feeReceived).to.be.greaterThan(0);
 
-      console.log(`  Treasury LST fee received: ${feeReceived / 1e9} LST`);
+      console.log(`  Treasury aSOL redemption fee received: ${feeReceived / 1e9} aSOL`);
     });
+
   });
 
   describe("22. Operation Counter Monotonicity", () => {
