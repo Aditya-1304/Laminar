@@ -92,7 +92,7 @@ pub fn handler(
   } else {
 
     let fee_bps = compute_dynamic_fee_bps(fee_amusd_redeem_bps, FeeAction::AmUSDRedeem, post_drawdown_cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps, uncertainty_index_bps, uncertainty_max_bps).ok_or(LaminarError::InvalidParameter)?;
-    
+
     let (net_in, fee_in) = apply_fee(amusd_amount, fee_bps)
       .ok_or(LaminarError::MathOverflow)?;
     require!(net_in > 0, LaminarError::AmountTooSmall);
@@ -131,7 +131,14 @@ pub fn handler(
     let lamport_debit = lst_dust_to_lamports_up(redeem_rounding_delta_lst, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
-    (sol_value_up, lst_gross_up, lamport_debit, 2u64)
+    if lamport_debit <= current_rounding_reserve {
+      (sol_value_up, lst_gross_up, lamport_debit, 2u64)
+    } else {
+      msg!(
+        "Rounding reserve insufficient for user-favoring redeem rounding: fallback to conservative"
+      );
+      (sol_value_par_down, lst_par_down, 0u64, 2u64)
+    }
   };
 
   msg!("SOL value (after mode rules): {}", sol_value_gross);

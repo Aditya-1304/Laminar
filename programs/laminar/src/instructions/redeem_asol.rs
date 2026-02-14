@@ -114,7 +114,7 @@ pub fn handler(
 
   // - Solvent (CR >= 100%): user-favoring rounding (up, up), reserve debited
   // - Insolvent (CR < 100%): conservative rounding (down, down), no reserve debit
-  let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
+    let (sol_value_gross, lst_gross, reserve_debit_from_redeem) = if solvent_mode {
     let sol_value_up = mul_div_up(asol_net_in, current_nav, SOL_PRECISION)
       .ok_or(LaminarError::MathOverflow)?;
     let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
@@ -125,10 +125,18 @@ pub fn handler(
     let lamport_debit = lst_dust_to_lamports_up(redeem_rounding_delta_lst, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
 
-    (sol_value_up, lst_gross_up, lamport_debit)
+    if lamport_debit <= current_rounding_reserve {
+      (sol_value_up, lst_gross_up, lamport_debit)
+    } else {
+      msg!(
+        "Rounding reserve insufficient for user-favoring redeem rounding; fallback to conservative path"
+      );
+      (sol_value_down, lst_gross_down, 0u64)
+    }
   } else {
-    (sol_value_down, lst_gross_down, 0)
+    (sol_value_down, lst_gross_down, 0u64)
   };
+
 
   msg!("SOL value (before fee): {}", sol_value_gross);
   msg!("LST gross to user: {}", lst_gross);

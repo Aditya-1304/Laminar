@@ -25,7 +25,10 @@ import { expect } from "chai";
 const SOL_PRECISION = new BN(1_000_000_000);
 const USD_PRECISION = new BN(1_000_000);
 const BPS_PRECISION = new BN(10_000);
-const MAX_FEE_MULTIPLIER_BPS = new BN(40_000);
+const FEE_MIN_MULTIPLIER_BPS = BPS_PRECISION; // 1.0x
+const FEE_MAX_MULTIPLIER_BPS = new BN(40_000); // 4.0x
+const UNCERTAINTY_K_BPS = new BN(1_000); // whitepaper Section 50.2
+const UNCERTAINTY_MAX_BPS = new BN(20_000); // 2.0x cap
 const MAX_SAFE_CR = new BN(Number.MAX_SAFE_INTEGER);
 
 const MIN_CR_BPS = new BN(13_000);               // 130%
@@ -135,22 +138,132 @@ function mulDivDown(a: BN, b: BN, c: BN): BN {
   return a.mul(b).div(c);
 }
 
-function feeBpsIncreaseWhenLow(baseFeeBps: number, crBps: BN, targetCrBps: BN): number {
-  if (baseFeeBps === 0) return 0;
-  if (crBps.eq(MAX_SAFE_CR) || crBps.gte(targetCrBps)) return baseFeeBps;
+type FeeDirection = "risk_increasing" | "risk_reducing";
 
-  const scaled = mulDivUp(new BN(baseFeeBps), targetCrBps, crBps);
-  const maxFee = mulDivDown(new BN(baseFeeBps), MAX_FEE_MULTIPLIER_BPS, BPS_PRECISION);
-  const capped = scaled.lte(maxFee) ? scaled : maxFee;
-  return capped.toNumber();
+function clampBn(v: BN, lo: BN, hi: BN): BN {
+  if (v.lt(lo)) return lo;
+  if (v.gt(hi)) return hi;
+  return v;
+}
+
+function deriveCrMultiplierBps(
+  direction: FeeDirection,
+  crBps: BN,
+  minCrBps: BN,
+  targetCrBps: BN,
+  feeMinMultiplierBps: BN,
+  feeMaxMultiplierBps: BN
+): BN {
+  if (crBps.eq(MAX_SAFE_CR)) return BPS_PRECISION;
+  if (!targetCrBps.gt(minCrBps)) return BPS_PRECISION;
+
+  if (direction === "risk_increasing") {
+    if (crBps.gte(targetCrBps)) return BPS_PRECISION;
+    if (crBps.lte(minCrBps)) return feeMaxMultiplierBps;
+
+    const distance = targetCrBps.sub(crBps);
+    const range = targetCrBps.sub(minCrBps);
+    const delta = feeMaxMultiplierBps.sub(BPS_PRECISION);
+    const step = mulDivDown(distance, delta, range);
+    return BPS_PRECISION.add(step);
+  }
+
+  if (crBps.gte(targetCrBps)) return BPS_PRECISION;
+  if (crBps.lte(minCrBps)) return feeMinMultiplierBps;
+
+  const distance = targetCrBps.sub(crBps);
+  const range = targetCrBps.sub(minCrBps);
+  const delta = BPS_PRECISION.sub(feeMinMultiplierBps);
+  const step = mulDivDown(distance, delta, range);
+  return BPS_PRECISION.sub(step);
+}
+
+function deriveUncertaintyMultiplierBps(
+  direction: FeeDirection,
+  uncertaintyIndexBps: BN,
+  uncertaintyMaxBps: BN
+): BN {
+  if (direction === "risk_reducing") return BPS_PRECISION;
+
+  const uncDelta = mulDivDown(uncertaintyIndexBps, BPS_PRECISION, UNCERTAINTY_K_BPS);
+  const uncUp = BPS_PRECISION.add(uncDelta);
+  return clampBn(uncUp, BPS_PRECISION, uncertaintyMaxBps);
+}
+
+function composeFeeMultiplierBps(
+  direction: FeeDirection,
+  crMultiplierBps: BN,
+  uncMultiplierBps: BN,
+  feeMinMultiplierBps: BN,
+  feeMaxMultiplierBps: BN
+): BN {
+  let total = mulDivDown(crMultiplierBps, uncMultiplierBps, BPS_PRECISION);
+
+  if (direction === "risk_increasing" && total.lt(BPS_PRECISION)) {
+    total = BPS_PRECISION;
+  }
+  if (direction === "risk_reducing" && total.gt(BPS_PRECISION)) {
+    total = BPS_PRECISION;
+  }
+
+  return clampBn(total, feeMinMultiplierBps, feeMaxMultiplierBps);
+}
+
+function computeDynamicFeeBps(
+  baseFeeBps: number,
+  direction: FeeDirection,
+  crBps: BN,
+  targetCrBps: BN,
+  opts?: {
+    minCrBps?: BN;
+    feeMinMultiplierBps?: BN;
+    feeMaxMultiplierBps?: BN;
+    uncertaintyIndexBps?: BN;
+    uncertaintyMaxBps?: BN;
+  }
+): number {
+  if (baseFeeBps === 0) return 0;
+
+  const minCrBps = opts?.minCrBps ?? MIN_CR_BPS;
+  const feeMinMultiplierBps = opts?.feeMinMultiplierBps ?? FEE_MIN_MULTIPLIER_BPS;
+  const feeMaxMultiplierBps = opts?.feeMaxMultiplierBps ?? FEE_MAX_MULTIPLIER_BPS;
+  const uncertaintyIndexBps = opts?.uncertaintyIndexBps ?? new BN(0);
+  const uncertaintyMaxBps = opts?.uncertaintyMaxBps ?? UNCERTAINTY_MAX_BPS;
+
+  const crMultiplierBps = deriveCrMultiplierBps(
+    direction,
+    crBps,
+    minCrBps,
+    targetCrBps,
+    feeMinMultiplierBps,
+    feeMaxMultiplierBps
+  );
+
+  const uncMultiplierBps = deriveUncertaintyMultiplierBps(
+    direction,
+    uncertaintyIndexBps,
+    uncertaintyMaxBps
+  );
+
+  const totalMultiplierBps = composeFeeMultiplierBps(
+    direction,
+    crMultiplierBps,
+    uncMultiplierBps,
+    feeMinMultiplierBps,
+    feeMaxMultiplierBps
+  );
+
+  return mulDivDown(new BN(baseFeeBps), totalMultiplierBps, BPS_PRECISION).toNumber();
+}
+
+function feeBpsIncreaseWhenLow(baseFeeBps: number, crBps: BN, targetCrBps: BN): number {
+  return computeDynamicFeeBps(baseFeeBps, "risk_increasing", crBps, targetCrBps);
 }
 
 function feeBpsDecreaseWhenLow(baseFeeBps: number, crBps: BN, targetCrBps: BN): number {
-  if (baseFeeBps === 0) return 0;
-  if (crBps.eq(MAX_SAFE_CR) || crBps.gte(targetCrBps)) return baseFeeBps;
-
-  return mulDivDown(new BN(baseFeeBps), crBps, targetCrBps).toNumber();
+  return computeDynamicFeeBps(baseFeeBps, "risk_reducing", crBps, targetCrBps);
 }
+
 
 describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   const provider = anchor.AnchorProvider.env();
