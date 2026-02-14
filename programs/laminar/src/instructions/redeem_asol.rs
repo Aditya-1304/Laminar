@@ -194,7 +194,6 @@ pub fn handler(
 
   // Update state BEFORE external calls
 
-
   {
     let global_state = &mut ctx.accounts.global_state;
     global_state.total_lst_amount = new_lst_amount;

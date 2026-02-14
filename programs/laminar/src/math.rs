@@ -288,6 +288,173 @@ pub fn nav_asol(tvl: u64, liability: u64, asol_supply: u64) -> Option<u64> {
     mul_div_down(equity, SOL_PRECISION, asol_supply)
 }
 
+/// fee action categories used by the dynamic fee engine
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeAction {
+  /// Debt creation (risk-increasing when CR is low)
+  AmusdMint,
+  /// Debt repayment (risk-reducing when CR is low)
+  AmUSDRedeem,
+  /// Equity injection (risk-reducing when CR is low)
+  AsolMint,
+  /// Equity exit (risk-increasing when CR is low)
+  AsolRedeem,
+}
+
+impl FeeAction {
+  /// True for actions that should become more expensive when CR deteriorates.
+  #[inline]
+  pub fn is_risk_increasing(self) -> bool {
+    matches!(self, FeeAction::AmusdMint | FeeAction::AsolRedeem)
+  }
+}
+
+/// uncertainty_up_bps = BPS + (uncertainity_intex_bps * BPS / k)
+pub const UNCERTAINTY_K_BPS: u64 = 1_000;
+
+/// Clamp helper for u64.
+#[inline]
+pub fn clamp_u64(value: u64, min_value: u64, max_value:u64) -> u64 {
+  value.max(min_value).max(max_value)
+} 
+
+/// Derive CR-based multiplier
+/// 
+/// Returns multiplier in bps (10_000 = 1.0x)
+pub fn derive_cr_multiplier_bps(
+  action: FeeAction,
+  cr_bps: u64,
+  min_cr_bps: u64,
+  target_cr_bps: u64,
+  fee_min_multiplier_bps: u64,
+  fee_max_multiplier_bps: u64,
+) -> Option<u64> {
+  // Enforce parameter bounds required by spec.
+  if min_cr_bps >= target_cr_bps {
+    return None;
+  }
+  if fee_min_multiplier_bps > BPS_PRECISION || fee_max_multiplier_bps < BPS_PRECISION {
+    return None;
+  }
+  if fee_min_multiplier_bps > fee_max_multiplier_bps {
+    return None;
+  }
+
+  if cr_bps == u64::MAX {
+    return Some(BPS_PRECISION);
+  }
+
+  let cr_mult = if action.is_risk_increasing() {
+    // expensive when CR falls.
+    if cr_bps >= target_cr_bps {
+      BPS_PRECISION
+    } else if cr_bps <= min_cr_bps {
+      fee_max_multiplier_bps
+    } else {
+      let distance = target_cr_bps.checked_sub(cr_bps)?;
+      let range = target_cr_bps.checked_sub(min_cr_bps)?;
+      let delta = fee_max_multiplier_bps.checked_sub(BPS_PRECISION)?;
+
+      let step = mul_div_down(distance, delta, range)?;
+      BPS_PRECISION.checked_add(step)?
+    }
+  } else {
+    // cheap when CR falls.
+    if cr_bps >= target_cr_bps {
+      BPS_PRECISION
+    } else if cr_bps <= min_cr_bps {
+      fee_min_multiplier_bps
+    } else {
+      let distance = target_cr_bps.checked_sub(cr_bps)?;
+      let range = target_cr_bps.checked_sub(min_cr_bps)?;
+      let delta = BPS_PRECISION.checked_sub(fee_min_multiplier_bps)?;
+
+      let step = mul_div_down(distance, delta, range)?;
+      BPS_PRECISION.checked_sub(step)?
+    }
+  };
+
+  Some(clamp_u64(cr_mult, fee_min_multiplier_bps, fee_max_multiplier_bps))
+}
+
+/// Derive uncertainity multiplier
+/// 
+/// for risk increasing actions: applies capped uncertainity uplift
+/// for risk reducing actions: neutral
+pub fn derive_uncertainity_multiplier_bps(
+  action: FeeAction,
+  uncertainty_index_bps: u64,
+  uncertainty_max_bps: u64,
+) -> Option<u64> {
+  if uncertainty_max_bps < BPS_PRECISION {
+    return None;
+  }
+
+  if !action.is_risk_increasing(){
+    return Some(BPS_PRECISION);
+  }
+
+  let uncertainity_delta = mul_div_down(uncertainty_index_bps, BPS_PRECISION, UNCERTAINTY_K_BPS)?;
+  let unc_up = BPS_PRECISION.checked_add(uncertainity_delta)?;
+
+  Some(clamp_u64(unc_up, BPS_PRECISION, uncertainty_max_bps))
+}
+
+/// CR and uncertainity multiplier wuth precedence and clamps
+pub fn compose_fee_multiplier_bps(
+  action: FeeAction,
+  cr_multiplier_bps: u64,
+  unc_multipier_bps: u64,
+  fee_min_multiplier_bps: u64,
+  fee_max_multiplier_bps: u64,
+) -> Option<u64> {
+  if fee_min_multiplier_bps > BPS_PRECISION || fee_max_multiplier_bps < BPS_PRECISION {
+    return None;
+  }
+
+  if fee_min_multiplier_bps > fee_max_multiplier_bps {
+    return None;
+  }
+
+  let mut total = mul_div_down(cr_multiplier_bps, unc_multipier_bps, BPS_PRECISION)?;
+
+  if action.is_risk_increasing() {
+    total = total.max(BPS_PRECISION)
+  } else {
+    total = total.min(BPS_PRECISION);
+  }
+
+  total = clamp_u64(total, fee_min_multiplier_bps, fee_max_multiplier_bps);
+  Some(total)
+}
+
+/// final dynamic fee in bps for a canonical action
+/// 
+/// Effective fee = floor(base_fee_bps * multiplier_total_bps / BPS)
+pub fn compute_dynamic_fee_bps(
+  base_fee_bps: u64,
+  action: FeeAction,
+  cr_bps: u64,
+  min_cr_bps: u64,
+  target_cr_bps: u64,
+  fee_min_multiplier_bps: u64,
+  fee_max_multiplier_bps: u64,
+  uncertainty_index_bps: u64,
+  uncertainty_max_bps: u64,
+) -> Option<u64> {
+  if base_fee_bps == 0 {
+    return Some(0);
+  }
+
+  let cr_multiplier = derive_cr_multiplier_bps(action, cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps)?;
+
+  let unc_multiplier = derive_uncertainity_multiplier_bps(action, uncertainty_index_bps, uncertainty_max_bps)?;
+
+  let total_multplier = compose_fee_multiplier_bps(action, cr_multiplier, unc_multiplier, fee_min_multiplier_bps, fee_max_multiplier_bps)?;
+
+  mul_div_down(base_fee_bps, total_multplier, BPS_PRECISION)
+}
+
 /// Dynamic fee adjustment when CR deteriorates (CR < target)
 /// - For actions that should become MORE expensive when CR is low
 /// - Returns base fee when CR >= target or if CR is infinite (no debt)
