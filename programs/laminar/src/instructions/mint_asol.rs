@@ -5,7 +5,7 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo}
 };
-use crate::{constants::ASOL_MINT_FEE_BPS, events::AsolMinted, instructions::sync_exchange_rate_in_place, state::*};
+use crate::{ events::AsolMinted, instructions::sync_exchange_rate_in_place, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
@@ -46,6 +46,12 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
   let target_cr_bps = global_state.target_cr_bps;
+  let min_cr_bps = global_state.min_cr_bps;
+  let fee_asol_mint_bps = global_state.fee_asol_mint_bps;
+  let fee_min_multiplier_bps = global_state.fee_min_multiplier_bps;
+  let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
+  let uncertainty_index_bps = global_state.uncertainty_index_bps;
+  let uncertainty_max_bps = global_state.uncertainty_max_bps;
 
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
 
@@ -137,7 +143,7 @@ pub fn handler(
     // First mint bootstrap price
     SOL_PRECISION  // 1 aSOL = 1 SOL
   } else {
-    nav_asol_with_reserve(old_tvl, current_liability, current_rounding_reserve, current_asol_supply)
+    nav_asol_with_reserve(old_tvl, current_liability, effective_rounding_reserve, current_asol_supply)
       .ok_or(LaminarError::MathOverflow)?
   };
 
@@ -171,7 +177,8 @@ pub fn handler(
   msg!("aSOL gross (before fee): {}", asol_gross);
 
   // Apply fee
-  let fee_bps = fee_bps_decrease_when_low(ASOL_MINT_FEE_BPS, old_cr_bps, target_cr_bps);
+  let fee_bps = compute_dynamic_fee_bps(fee_asol_mint_bps, FeeAction::AsolMint, old_cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps, uncertainty_index_bps, uncertainty_max_bps).ok_or(LaminarError::InvalidParameter)?;
+
   let (asol_net, fee) = apply_fee(asol_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 

@@ -5,7 +5,7 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::{constants::{AMUSD_REDEEM_FEE_BPS, MIN_PROTOCOL_TVL}, events::AmUSDRedeemed, instructions::sync_exchange_rate_in_place, state::*};
+use crate::{constants:: MIN_PROTOCOL_TVL, events::AmUSDRedeemed, instructions::sync_exchange_rate_in_place, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
@@ -44,6 +44,12 @@ pub fn handler(
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let target_cr_bps = global_state.target_cr_bps;
+  let fee_amusd_redeem_bps = global_state.fee_amusd_mint_bps;
+  let fee_min_multiplier_bps = global_state.fee_min_multiplier_bps;
+  let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
+  let uncertainty_index_bps = global_state.uncertainty_index_bps;
+  let uncertainty_max_bps = global_state.uncertainty_max_bps;
+
 
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
 
@@ -84,7 +90,9 @@ pub fn handler(
   let (amusd_net_in, amusd_fee_in) = if insolvency_mode {
     (amusd_amount, 0u64)
   } else {
-    let fee_bps = fee_bps_decrease_when_low(AMUSD_REDEEM_FEE_BPS, post_drawdown_cr_bps, target_cr_bps);
+
+    let fee_bps = compute_dynamic_fee_bps(fee_amusd_redeem_bps, FeeAction::AmUSDRedeem, post_drawdown_cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps, uncertainty_index_bps, uncertainty_max_bps).ok_or(LaminarError::InvalidParameter)?;
+    
     let (net_in, fee_in) = apply_fee(amusd_amount, fee_bps)
       .ok_or(LaminarError::MathOverflow)?;
     require!(net_in > 0, LaminarError::AmountTooSmall);

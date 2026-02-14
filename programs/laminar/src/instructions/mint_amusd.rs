@@ -6,7 +6,7 @@ use anchor_lang::prelude::program_option::COption;
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, MintTo};
-use crate::constants::AMUSD_MINT_FEE_BPS;
+// use crate::constants::AMUSD_MINT_FEE_BPS;
 use crate::events::AmUSDMinted;
 use crate::state::*;
 use crate::math::*;
@@ -50,6 +50,12 @@ pub fn handler(
   let current_amusd_supply = global_state.amusd_supply;
   let min_cr_bps = global_state.min_cr_bps;
   let target_cr_bps = global_state.target_cr_bps;
+  let fee_amusd_mint_bps = global_state.fee_amusd_mint_bps;
+  let fee_min_multiplier_bps = global_state.fee_min_multiplier_bps;
+  let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
+  let uncertainty_index_bps = global_state.uncertainty_index_bps;
+  let uncertainty_max_bps = global_state.uncertainty_max_bps;
+
 
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
 
@@ -106,7 +112,8 @@ pub fn handler(
 
 
   // Fee is taken in amUSD terms (per whitepaper: amUSD_net = amUSD_minted − fee)
-  let fee_bps = fee_bps_increase_when_low(AMUSD_MINT_FEE_BPS, old_cr_bps, target_cr_bps);
+  let fee_bps = compute_dynamic_fee_bps(fee_amusd_mint_bps, FeeAction::AmusdMint, old_cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps, uncertainty_index_bps, uncertainty_max_bps).ok_or(LaminarError::InvalidParameter)?;
+  
   let (amusd_to_user, amusd_fee) = apply_fee(amusd_gross, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
 

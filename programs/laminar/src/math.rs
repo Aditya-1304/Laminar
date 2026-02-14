@@ -315,7 +315,7 @@ pub const UNCERTAINTY_K_BPS: u64 = 1_000;
 /// Clamp helper for u64.
 #[inline]
 pub fn clamp_u64(value: u64, min_value: u64, max_value:u64) -> u64 {
-  value.max(min_value).max(max_value)
+  value.max(min_value).min(max_value)
 } 
 
 /// Derive CR-based multiplier
@@ -381,7 +381,7 @@ pub fn derive_cr_multiplier_bps(
 /// 
 /// for risk increasing actions: applies capped uncertainity uplift
 /// for risk reducing actions: neutral
-pub fn derive_uncertainity_multiplier_bps(
+pub fn derive_uncertainty_multiplier_bps(
   action: FeeAction,
   uncertainty_index_bps: u64,
   uncertainty_max_bps: u64,
@@ -448,7 +448,7 @@ pub fn compute_dynamic_fee_bps(
 
   let cr_multiplier = derive_cr_multiplier_bps(action, cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps)?;
 
-  let unc_multiplier = derive_uncertainity_multiplier_bps(action, uncertainty_index_bps, uncertainty_max_bps)?;
+  let unc_multiplier = derive_uncertainty_multiplier_bps(action, uncertainty_index_bps, uncertainty_max_bps)?;
 
   let total_multplier = compose_fee_multiplier_bps(action, cr_multiplier, unc_multiplier, fee_min_multiplier_bps, fee_max_multiplier_bps)?;
 
@@ -778,5 +778,119 @@ mod tests {
         let lamports = usd_dust_to_lamports_up(1, 100 * USD_PRECISION).unwrap();
         assert_eq!(lamports, 10);
     }
+
+        #[test]
+    fn test_dynamic_fee_curve_all_actions_green_yellow_red() {
+        let base = 100u64;
+        let min_cr = 13_000u64;
+        let target_cr = 15_000u64;
+        let mmin = 5_000u64;  // 0.5x
+        let mmax = 20_000u64; // 2.0x
+        let unc_idx = 0u64;
+        let unc_max = 20_000u64;
+
+        // Green (CR >= target): base fee
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmusdMint, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolRedeem, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmUSDRedeem, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolMint, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+
+        // Yellow midpoint CR=14_000 (halfway): 1.5x for risk-increasing, 0.75x for risk-reducing.
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmusdMint, 14_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(150)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolRedeem, 14_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(150)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmUSDRedeem, 14_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(75)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolMint, 14_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(75)
+        );
+
+        // Red (CR <= min): clamp to extreme multipliers.
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmusdMint, 12_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(200)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolRedeem, 12_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(200)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmUSDRedeem, 12_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(50)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolMint, 12_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn test_uncertainty_applies_only_to_risk_increasing_actions() {
+        let base = 100u64;
+        let min_cr = 13_000u64;
+        let target_cr = 15_000u64;
+        let mmin = 10_000u64;
+        let mmax = 40_000u64;
+
+        // uncertainty_up = 10_000 + floor(500 * 10_000 / 1000) = 15_000 (1.5x)
+        let unc_idx = 500u64;
+        let unc_max = 20_000u64;
+
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmusdMint, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(150)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolRedeem, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(150)
+        );
+
+        // Risk reducing should stay neutral under uncertainty.
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AmUSDRedeem, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+        assert_eq!(
+            compute_dynamic_fee_bps(base, FeeAction::AsolMint, 16_000, min_cr, target_cr, mmin, mmax, unc_idx, unc_max),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn test_invalid_multiplier_bounds_fail() {
+        let result = compute_dynamic_fee_bps(
+            100,
+            FeeAction::AmusdMint,
+            14_000,
+            13_000,
+            15_000,
+            12_000, 
+            9_000,  
+            0,
+            20_000,
+        );
+        assert!(result.is_none());
+    }
+
 
 }

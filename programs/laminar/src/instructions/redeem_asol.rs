@@ -7,7 +7,7 @@ use anchor_spl::{
   associated_token::AssociatedToken,
   token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked, Burn}
 };
-use crate::{constants::{ASOL_REDEEM_FEE_BPS, MIN_PROTOCOL_TVL}, events::AsolRedeemed, instructions::sync_exchange_rate_in_place, state::*};
+use crate::{constants:: MIN_PROTOCOL_TVL, events::AsolRedeemed, instructions::sync_exchange_rate_in_place, state::*};
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
@@ -50,6 +50,12 @@ pub fn handler(
   let target_cr_bps = global_state.target_cr_bps;
   let min_cr_bps = global_state.min_cr_bps;
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
+  let fee_asol_redeem_bps = global_state.fee_asol_redeem_bps;
+  let fee_min_multiplier_bps = global_state.fee_min_multiplier_bps;
+  let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
+  let uncertainty_index_bps = global_state.uncertainty_index_bps;
+  let uncertainty_max_bps = global_state.uncertainty_max_bps;
+
 
   // Configured hard cap for reserve growth
   let max_rounding_reserve = global_state.max_rounding_reserve_lamports;
@@ -80,7 +86,8 @@ pub fn handler(
 
   let old_cr_bps = compute_cr_bps(old_tvl, current_liability);
 
-  let fee_bps = fee_bps_increase_when_low(ASOL_REDEEM_FEE_BPS, old_cr_bps, target_cr_bps);
+  let fee_bps = compute_dynamic_fee_bps(fee_asol_redeem_bps, FeeAction::AsolRedeem, old_cr_bps, min_cr_bps, target_cr_bps, fee_min_multiplier_bps, fee_max_multiplier_bps, uncertainty_index_bps, uncertainty_max_bps).ok_or(LaminarError::InvalidParameter)?;
+
   let (asol_net_in, asol_fee_in) = apply_fee(asol_amount, fee_bps)
     .ok_or(LaminarError::MathOverflow)?;
   require!(asol_net_in > 0, LaminarError::AmountTooSmall);
