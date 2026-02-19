@@ -8,6 +8,8 @@ import {
   SYSVAR_CLOCK_PUBKEY,
   SYSVAR_INSTRUCTIONS_PUBKEY,
   LAMPORTS_PER_SOL,
+  ComputeBudgetProgram,
+  Transaction,
 } from "@solana/web3.js";
 
 import {
@@ -71,7 +73,29 @@ interface GlobalStateData {
   redeemPaused: boolean;
   mockSolPriceUsd: BN;
   mockLstToSolRate: BN;
+
+  feeAmusdMintBps: BN;
+  feeAmusdRedeemBps: BN;
+  feeAsolMintBps: BN;
+  feeAsolRedeemBps: BN;
+  feeMinMultiplierBps: BN;
+  feeMaxMultiplierBps: BN;
+
+  roundingReserveLamports: BN;
+  maxRoundingReserveLamports: BN;
+
+  uncertaintyIndexBps: BN;
+  uncertaintyMaxBps: BN;
+
+  maxOracleStalenessSlots: BN;
+  maxConfBps: BN;
+  maxLstStaleEpochs: BN;
+
+  lastTvlUpdateSlot: BN;
+  lastOracleUpdateSlot: BN;
+  mockOracleConfidenceUsd: BN;
 }
+
 
 /**
  * Compute TVL in SOL terms
@@ -85,7 +109,7 @@ function computeTvlSol(lstAmount: BN, lstToSolRate: BN): BN {
  */
 function computeLiabilitySol(amusdSupply: BN, solPriceUsd: BN): BN {
   if (solPriceUsd.isZero()) return new BN(0);
-  return amusdSupply.mul(SOL_PRECISION).div(solPriceUsd);
+  return amusdSupply.mul(SOL_PRECISION).add(solPriceUsd.subn(1)).div(solPriceUsd);
 }
 
 /**
@@ -638,6 +662,60 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
     return computeCrBps(tvl, liability);
   }
+
+  async function sendSlotPingTx(): Promise<void> {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: protocolState.authority.publicKey,
+        toPubkey: protocolState.globalState,
+        lamports: 1,
+      })
+    );
+
+    try {
+      await provider.sendAndConfirm(tx, [protocolState.authority], {
+        commitment: "processed",
+        skipPreflight: true,
+      });
+    } catch {
+      // ignore transient blockhash/rpc hiccups; loop will retry
+    }
+  }
+
+  async function waitForSlotDelta(delta: number, timeoutMs = 180_000): Promise<void> {
+    const start = await connection.getSlot("processed");
+    const target = start + delta;
+    const startedAt = Date.now();
+
+    while (true) {
+      const now = await connection.getSlot("processed");
+      if (now >= target) return;
+
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`Timed out waiting for slot ${target}, current=${now}`);
+      }
+
+      const remaining = target - now;
+      const burst = Math.min(Math.max(1, remaining), 6);
+      for (let i = 0; i < burst; i++) {
+        await sendSlotPingTx();
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+
+  async function getTokenAmountOrZero(address: PublicKey): Promise<BN> {
+    try {
+      const acc = await getAccount(connection, address);
+      return new BN(acc.amount.toString());
+    } catch {
+      return new BN(0);
+    }
+  }
+
+
 
   before(async () => {
     protocolState = await initializeProtocol();
@@ -2457,6 +2535,293 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       expect(ASOL_REDEEM_FEE_BPS).to.be.lessThanOrEqual(500);
 
       console.log("  ✓ All fees within reasonable bounds (<=5%)");
+    });
+  });
+
+  describe("47. A5 Oracle Freshness", () => {
+    it("Rejects mint when oracle snapshot is stale", async () => {
+      const userSetup = await setupUser(25);
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+      const state = await getGlobalState();
+
+      const staleSlots = state.maxOracleStalenessSlots.toNumber() + 2;
+      await waitForSlotDelta(staleSlots, 180_000);
+
+      try {
+        await mintAsol(
+          userSetup.user,
+          userSetup.lstAccount,
+          userSetup.asolAccount,
+          new BN(1 * LAMPORTS_PER_SOL),
+          new BN(1)
+        );
+        expect.fail("Expected OraclePriceStale");
+      } catch (err: any) {
+        expect(err.toString()).to.include("OraclePriceStale");
+      }
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+    });
+  });
+
+  describe("48. A5 CPI Guard Positive Vectors", () => {
+    it("Allows compute-budget preamble + direct call", async () => {
+      const userSetup = await setupUser(25);
+      const state = await getGlobalState();
+      const [vaultAuthority] = getVaultAuthorityPda();
+
+      const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.asolMint.publicKey,
+        owner: state.treasury,
+      });
+
+      const ix = await program.methods
+        .mintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
+        .accounts({
+          user: userSetup.user.publicKey,
+          globalState: protocolState.globalState,
+          asolMint: protocolState.asolMint.publicKey,
+          userAsolAccount: userSetup.asolAccount,
+          treasuryAsolAccount,
+          treasury: state.treasury,
+          userLstAccount: userSetup.lstAccount,
+          vault: protocolState.vault,
+          vaultAuthority,
+          lstMint: protocolState.lstMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          clock: SYSVAR_CLOCK_PUBKEY,
+        } as any)
+        .instruction();
+
+      const tx = new Transaction().add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+        ix
+      );
+
+      await provider.sendAndConfirm(tx, [userSetup.user]);
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      expect(new BN(userAsolBalance.amount.toString()).gt(new BN(0))).to.be.true;
+    });
+
+    it("Allows direct call with no preamble", async () => {
+      const userSetup = await setupUser(25);
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      const userAsolBalance = await getAccount(connection, userSetup.asolAccount);
+      expect(new BN(userAsolBalance.amount.toString()).gt(new BN(0))).to.be.true;
+    });
+  });
+
+  describe("49. A5 amUSD Haircut Path", () => {
+    it("Uses haircut path and charges zero amUSD fee when CR < 100%", async () => {
+      const userSetup = await setupUser(400);
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(120 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(25 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      let state = await getGlobalState();
+      let tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      let liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      expect(liability.gt(new BN(0))).to.be.true;
+
+      const targetCr = new BN(9_500);
+      let crashPrice = targetCr
+        .mul(state.amusdSupply)
+        .mul(SOL_PRECISION)
+        .div(tvl.mul(BPS_PRECISION));
+
+      if (crashPrice.gte(state.mockSolPriceUsd)) {
+        crashPrice = state.mockSolPriceUsd.sub(new BN(1));
+      }
+      crashPrice = BN.max(crashPrice, new BN(1));
+
+      await updateMockPrices(crashPrice, state.mockLstToSolRate, new BN(0));
+
+      state = await getGlobalState();
+      tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      let crBefore = computeCrBps(tvl, liability);
+
+      if (!crBefore.lt(BPS_PRECISION)) {
+        const lower = BN.max(new BN(1), state.mockSolPriceUsd.muln(9).divn(10));
+        await updateMockPrices(lower, state.mockLstToSolRate, new BN(0));
+        state = await getGlobalState();
+        tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+        liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+        crBefore = computeCrBps(tvl, liability);
+      }
+
+      expect(crBefore.lt(BPS_PRECISION)).to.be.true;
+
+      const userAmusdBefore = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const userLstBefore = new BN((await getAccount(connection, userSetup.lstAccount)).amount.toString());
+
+      const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.amusdMint.publicKey,
+        owner: state.treasury,
+      });
+      const treasuryBefore = await getTokenAmountOrZero(treasuryAmusdAccount);
+
+      let redeemAmount = BN.min(userAmusdBefore.divn(4), new BN(500 * 1_000_000));
+      if (redeemAmount.isZero()) redeemAmount = userAmusdBefore;
+
+      const haircutBps = BN.min(crBefore, BPS_PRECISION);
+
+      const expectedLstOutFor = (amount: BN): BN => {
+        const solParDown = amount.mul(SOL_PRECISION).div(state.mockSolPriceUsd);
+        const solHaircut = solParDown.mul(haircutBps).div(BPS_PRECISION);
+        return solHaircut.mul(SOL_PRECISION).div(state.mockLstToSolRate);
+      };
+
+      let expectedLstOut = expectedLstOutFor(redeemAmount);
+      while (expectedLstOut.lt(new BN(100_000)) && redeemAmount.lt(userAmusdBefore)) {
+        redeemAmount = BN.min(redeemAmount.muln(2), userAmusdBefore);
+        expectedLstOut = expectedLstOutFor(redeemAmount);
+      }
+
+      expect(expectedLstOut.gte(new BN(100_000))).to.be.true;
+
+      await redeemAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        redeemAmount,
+        new BN(100_000)
+      );
+
+      const userAmusdAfter = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const userLstAfter = new BN((await getAccount(connection, userSetup.lstAccount)).amount.toString());
+      const treasuryAfter = await getTokenAmountOrZero(treasuryAmusdAccount);
+
+      const burned = userAmusdBefore.sub(userAmusdAfter);
+      const lstReceived = userLstAfter.sub(userLstBefore);
+      const treasuryDelta = treasuryAfter.sub(treasuryBefore);
+
+      expect(burned.eq(redeemAmount)).to.be.true;
+      expect(treasuryDelta.isZero()).to.be.true;
+      expect(lstReceived.eq(expectedLstOut)).to.be.true;
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+    });
+  });
+
+  describe("50. A5 aSOL CR_post Gate", () => {
+    it("Reverts with CollateralRatioTooLow when redeem would push CR below min", async () => {
+      const userSetup = await setupUser(500);
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(150 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(20 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      let state = await getGlobalState();
+      let tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      let liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      expect(liability.gt(new BN(0))).to.be.true;
+
+      const targetCr = state.minCrBps.add(new BN(1));
+      let tunedPrice = targetCr
+        .mul(state.amusdSupply)
+        .mul(SOL_PRECISION)
+        .div(tvl.mul(BPS_PRECISION));
+
+      if (tunedPrice.gte(state.mockSolPriceUsd)) {
+        tunedPrice = state.mockSolPriceUsd.sub(new BN(1));
+      }
+      tunedPrice = BN.max(tunedPrice, new BN(1));
+
+      await updateMockPrices(tunedPrice, state.mockLstToSolRate, new BN(0));
+
+      state = await getGlobalState();
+      tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const crNow = computeCrBps(tvl, liability);
+
+      expect(crNow.gte(state.minCrBps)).to.be.true;
+
+      const nav = computeAsolNav(tvl, liability, state.asolSupply);
+      expect(nav.gt(new BN(0))).to.be.true;
+
+      const minTvlAfter = liability.mul(state.minCrBps).div(BPS_PRECISION);
+      const requiredSolOut = tvl.gt(minTvlAfter) ? tvl.sub(minTvlAfter).add(new BN(1)) : new BN(1);
+
+      const asolNetNeeded = mulDivUp(requiredSolOut, SOL_PRECISION, nav);
+
+      const feeBps = computeDynamicFeeBps(
+        ASOL_REDEEM_FEE_BPS,
+        "risk_increasing",
+        crNow,
+        state.targetCrBps,
+        {
+          minCrBps: state.minCrBps,
+          feeMinMultiplierBps: state.feeMinMultiplierBps,
+          feeMaxMultiplierBps: state.feeMaxMultiplierBps,
+          uncertaintyIndexBps: state.uncertaintyIndexBps,
+          uncertaintyMaxBps: state.uncertaintyMaxBps,
+        }
+      );
+
+      const feeDenom = BPS_PRECISION.sub(new BN(feeBps));
+      expect(feeDenom.gt(new BN(0))).to.be.true;
+
+      const asolInputNeeded = mulDivUp(asolNetNeeded, BPS_PRECISION, feeDenom);
+      const userAsol = new BN((await getAccount(connection, userSetup.asolAccount)).amount.toString());
+
+      const redeemAttempt = BN.min(
+        userAsol,
+        BN.max(asolInputNeeded.add(new BN(1_000_000)), new BN(5_000_000))
+      );
+      expect(redeemAttempt.gt(new BN(0))).to.be.true;
+
+      try {
+        await redeemAsol(
+          userSetup.user,
+          userSetup.lstAccount,
+          userSetup.asolAccount,
+          redeemAttempt,
+          new BN(100_000)
+        );
+        expect.fail("Expected CollateralRatioTooLow");
+      } catch (err: any) {
+        expect(err.toString()).to.include("CollateralRatioTooLow");
+      }
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
     });
   });
 

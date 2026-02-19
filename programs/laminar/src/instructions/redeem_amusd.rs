@@ -44,7 +44,7 @@ pub fn handler(
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let target_cr_bps = global_state.target_cr_bps;
-  let fee_amusd_redeem_bps = global_state.fee_amusd_mint_bps;
+  let fee_amusd_redeem_bps = global_state.fee_amusd_redeem_bps;
   let fee_min_multiplier_bps = global_state.fee_min_multiplier_bps;
   let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
   let uncertainty_index_bps = global_state.uncertainty_index_bps;
