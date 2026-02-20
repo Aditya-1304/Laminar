@@ -220,7 +220,42 @@ pub fn assert_oracle_freshness_and_confidence(
   Ok(())
 }
 
-/// Protocol specific error codes 
+/// Assert that the cached LST exchange-rate snapshot is fresh enough to use.
+///
+/// This guard prevents mint/redeem pricing from using stale LST state.
+/// Call this before any price-sensitive math in user entrypoints.
+///
+/// # Arguments
+/// * `current_slot` - Current slot from the `Clock` sysvar.
+/// * `last_lst_update_slot` - Slot when LST snapshot was last refreshed.
+/// * `max_lst_staleness_slots` - Maximum allowed age (in slots) of the snapshot.
+///
+/// # Errors
+/// Returns:
+/// * `LaminarError::InvalidParameter` if bounds are malformed.
+/// * `LaminarError::ArithmeticOverflow` on impossible slot arithmetic failure.
+/// * `LaminarError::LstRateStale` if snapshot age exceeds configured maximum.
+///
+/// # Rationale
+/// Solana localnet/test validators may pause block production when idle.
+/// This explicit check keeps behavior deterministic and fail-closed.
+pub fn assert_lst_snapshot_fresh(
+  current_slot: u64,
+  last_lst_update_slot: u64,
+  max_lst_staleness_slots: u64,
+) -> Result<()> {
+  require!(max_lst_staleness_slots > 0, LaminarError::InvalidParameter);
+
+  require!(current_slot >= last_lst_update_slot, LaminarError::InvalidParameter);
+
+  let age_slots = current_slot
+    .checked_sub(last_lst_update_slot)
+    .ok_or(LaminarError::ArithmeticOverflow)?;
+
+  require!(age_slots <= max_lst_staleness_slots, LaminarError::LstRateStale);
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +446,33 @@ mod tests {
             2_000_000, // 2%
             150,       // 1.5% max
         );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lst_snapshot_fresh_valid() {
+        // age = 50, max = 150 -> valid
+        let result = assert_lst_snapshot_fresh(1_000, 950, 150);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_lst_snapshot_fresh_equal_boundary() {
+        // age = max -> still valid
+        let result = assert_lst_snapshot_fresh(1_000, 850, 150);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_lst_snapshot_fresh_fails_when_stale() {
+        // age = 151, max = 150 -> stale
+        let result = assert_lst_snapshot_fresh(1_000, 849, 150);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lst_snapshot_fresh_fails_on_zero_max() {
+        let result = assert_lst_snapshot_fresh(1_000, 1_000, 0);
         assert!(result.is_err());
     }
 

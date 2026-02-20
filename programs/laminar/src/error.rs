@@ -95,4 +95,7 @@ pub enum LaminarError {
 
   #[msg("Oracle confidence is above configured max_conf_bps")]
   OracleConfidenceTooHigh,
+
+  #[msg("LST exchange-rate snapshot is stale - refresh exchange rate before pricing actions")]
+  LstRateStale,
 } 

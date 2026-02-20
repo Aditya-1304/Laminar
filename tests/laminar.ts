@@ -663,6 +663,11 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     return computeCrBps(tvl, liability);
   }
 
+  /**
+ * Sends a tiny transfer tx to force local validator activity.
+ * Localnet often stops slot production while idle; this "ping"
+ * advances slots deterministically for staleness tests.
+ */
   async function sendSlotPingTx(): Promise<void> {
     const tx = new Transaction().add(
       SystemProgram.transfer({
@@ -677,11 +682,15 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         commitment: "processed",
         skipPreflight: true,
       });
-    } catch {
-      // ignore transient blockhash/rpc hiccups; loop will retry
-    }
+    } catch { }
   }
 
+  /**
+   * Waits until the chain advances by `delta` slots.
+   *
+   * Uses active tx pings so tests do not hang on idle localnet.
+   * This is required for reliable oracle/LST staleness vectors.
+   */
   async function waitForSlotDelta(delta: number, timeoutMs = 180_000): Promise<void> {
     const start = await connection.getSlot("processed");
     const target = start + delta;
@@ -690,21 +699,30 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     while (true) {
       const now = await connection.getSlot("processed");
       if (now >= target) return;
-
       if (Date.now() - startedAt > timeoutMs) {
         throw new Error(`Timed out waiting for slot ${target}, current=${now}`);
       }
 
       const remaining = target - now;
       const burst = Math.min(Math.max(1, remaining), 6);
-      for (let i = 0; i < burst; i++) {
-        await sendSlotPingTx();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      for (let i = 0; i < burst; i++) await sendSlotPingTx();
+      await new Promise((r) => setTimeout(r, 25));
     }
   }
 
+  /**
+ * Explicitly refreshes LST exchange-rate cache metadata on-chain.
+ * Useful for tests that assert stale -> refresh -> success flows.
+ */
+  async function syncExchangeRate(): Promise<string> {
+    return await program.methods
+      .syncExchangeRate()
+      .accounts({
+        globalState: protocolState.globalState,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .rpc();
+  }
 
   async function getTokenAmountOrZero(address: PublicKey): Promise<BN> {
     try {
@@ -2822,6 +2840,47 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       }
 
       await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+    });
+  });
+
+  describe("51. A5 LST Staleness", () => {
+    it("Rejects mint when LST snapshot is stale; succeeds after sync_exchange_rate", async () => {
+      const userSetup = await setupUser(25);
+
+      await syncExchangeRate();
+      const state = await getGlobalState();
+
+      const staleSlots = state.maxOracleStalenessSlots.toNumber() + 2;
+      await waitForSlotDelta(staleSlots, 180_000);
+
+      // refresh oracle only, so failure source is LST staleness
+      await updateMockPrices(state.mockSolPriceUsd, state.mockLstToSolRate, new BN(0));
+
+      try {
+        await mintAsol(
+          userSetup.user,
+          userSetup.lstAccount,
+          userSetup.asolAccount,
+          new BN(1 * LAMPORTS_PER_SOL),
+          new BN(1),
+        );
+        expect.fail("Expected LstRateStale");
+      } catch (err: any) {
+        expect(err.toString()).to.include("LstRateStale");
+      }
+
+      await syncExchangeRate();
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(1 * LAMPORTS_PER_SOL),
+        new BN(1),
+      );
+
+      const bal = await getAccount(connection, userSetup.asolAccount);
+      expect(Number(bal.amount)).to.be.greaterThan(0);
     });
   });
 

@@ -24,6 +24,11 @@ pub fn handler(
   {
   let global_state = &mut ctx.accounts.global_state;
   global_state.validate_version()?;
+  assert_lst_snapshot_fresh(
+    ctx.accounts.clock.slot,
+    global_state.last_tvl_update_slot,
+    global_state.max_oracle_staleness_slots,
+  )?;
   sync_exchange_rate_in_place(global_state, ctx.accounts.clock.slot)?;
   }
 
