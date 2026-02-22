@@ -7,6 +7,7 @@ skip-lint = false
 
 [programs.localnet]
 laminar = "DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc"
+cpi_tester = "E5L3jT8u2qEp9UYXPq2DD97fsVvtzhywHXPRohznfhQr"
 
 [registry]
 url = "https://api.apr.dev"

@@ -1,0 +1,23 @@
+[package]
+name = "cpi_tester"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "cpi_tester"
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "laminar/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+laminar = { path = "../laminar", features = ["cpi"] }

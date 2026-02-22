@@ -1,6 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { BN, Program } from "@coral-xyz/anchor";
 import { Laminar } from "../target/types/laminar";
+import { CpiTester } from "../target/types/cpi_tester";
 import {
   Keypair,
   PublicKey,
@@ -43,6 +44,9 @@ const AMUSD_MINT_FEE_BPS = 50;    // 0.5%
 const AMUSD_REDEEM_FEE_BPS = 25;  // 0.25%
 const ASOL_MINT_FEE_BPS = 30;     // 0.3%
 const ASOL_REDEEM_FEE_BPS = 15;   // 0.15%
+
+const program = anchor.workspace.Laminar as Program<Laminar>;
+const cpiTester = anchor.workspace.CpiTester as Program<CpiTester>;
 
 interface ProtocolState {
   globalState: PublicKey;
@@ -723,6 +727,18 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       } as any)
       .rpc();
   }
+
+  /**
+ * Reset oracle and LST freshness to a known-good baseline.
+ *
+ * This should be called at the start of tests that expect deterministic
+ * error types so stale state from prior tests does not leak in.
+ */
+  async function resetAndSyncSnapshots(): Promise<void> {
+    await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+    await syncExchangeRate();
+  }
+
 
   async function getTokenAmountOrZero(address: PublicKey): Promise<BN> {
     try {
@@ -2560,11 +2576,17 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     it("Rejects mint when oracle snapshot is stale", async () => {
       const userSetup = await setupUser(25);
 
-      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
-      const state = await getGlobalState();
+      // Start from clean/fresh snapshots.
+      await resetAndSyncSnapshots();
 
+      const state = await getGlobalState();
       const staleSlots = state.maxOracleStalenessSlots.toNumber() + 2;
+
+      // Let oracle snapshot become stale.
       await waitForSlotDelta(staleSlots, 180_000);
+
+      // Refresh ONLY LST snapshot so the failure source is oracle staleness.
+      await syncExchangeRate();
 
       try {
         await mintAsol(
@@ -2576,14 +2598,20 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         );
         expect.fail("Expected OraclePriceStale");
       } catch (err: any) {
-        expect(err.toString()).to.include("OraclePriceStale");
+        const msg = err?.toString?.() ?? String(err);
+        expect(msg).to.include("OraclePriceStale");
+      } finally {
+        // Always restore clean state for downstream tests.
+        await resetAndSyncSnapshots();
       }
-
-      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
     });
   });
 
+
   describe("48. A5 CPI Guard Positive Vectors", () => {
+    beforeEach(async () => {
+      await resetAndSyncSnapshots();
+    });
     it("Allows compute-budget preamble + direct call", async () => {
       const userSetup = await setupUser(25);
       const state = await getGlobalState();
@@ -2642,6 +2670,9 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   });
 
   describe("49. A5 amUSD Haircut Path", () => {
+    beforeEach(async () => {
+      await resetAndSyncSnapshots();
+    });
     it("Uses haircut path and charges zero amUSD fee when CR < 100%", async () => {
       const userSetup = await setupUser(400);
 
@@ -2748,6 +2779,9 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   });
 
   describe("50. A5 aSOL CR_post Gate", () => {
+    beforeEach(async () => {
+      await resetAndSyncSnapshots();
+    });
     it("Reverts with CollateralRatioTooLow when redeem would push CR below min", async () => {
       const userSetup = await setupUser(500);
 
@@ -2881,6 +2915,90 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
 
       const bal = await getAccount(connection, userSetup.asolAccount);
       expect(Number(bal.amount)).to.be.greaterThan(0);
+    });
+  });
+
+  describe("52. A5 CPI Negative Depth Vectors", () => {
+    it("Rejects direct CPI (proxy -> laminar)", async () => {
+      const userSetup = await setupUser(25);
+      const state = await getGlobalState();
+      const [vaultAuthority] = getVaultAuthorityPda();
+
+      const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.asolMint.publicKey,
+        owner: state.treasury,
+      });
+
+      try {
+        await cpiTester.methods
+          .cpiMintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
+          .accounts({
+            user: userSetup.user.publicKey,
+            globalState: protocolState.globalState,
+            asolMint: protocolState.asolMint.publicKey,
+            userAsolAccount: userSetup.asolAccount,
+            treasuryAsolAccount,
+            treasury: state.treasury,
+            userLstAccount: userSetup.lstAccount,
+            vault: protocolState.vault,
+            vaultAuthority,
+            lstMint: protocolState.lstMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            cpiTesterProgram: cpiTester.programId,
+            laminarProgram: program.programId,
+          } as any)
+          .signers([userSetup.user])
+          .rpc();
+
+        expect.fail("Expected InvalidCPIContext");
+      } catch (err: any) {
+        const msg = err.toString();
+        expect(msg.includes("InvalidCPIContext")).to.be.true;
+      }
+    });
+
+    it("Rejects nested CPI (proxy -> proxy -> laminar)", async () => {
+      const userSetup = await setupUser(25);
+      const state = await getGlobalState();
+      const [vaultAuthority] = getVaultAuthorityPda();
+
+      const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
+        mint: protocolState.asolMint.publicKey,
+        owner: state.treasury,
+      });
+
+      try {
+        await cpiTester.methods
+          .cpiNestedMintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
+          .accounts({
+            user: userSetup.user.publicKey,
+            globalState: protocolState.globalState,
+            asolMint: protocolState.asolMint.publicKey,
+            userAsolAccount: userSetup.asolAccount,
+            treasuryAsolAccount,
+            treasury: state.treasury,
+            userLstAccount: userSetup.lstAccount,
+            vault: protocolState.vault,
+            vaultAuthority,
+            lstMint: protocolState.lstMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            cpiTesterProgram: cpiTester.programId,
+            laminarProgram: program.programId,
+          } as any)
+          .signers([userSetup.user])
+          .rpc();
+
+        expect.fail("Expected InvalidCPIContext");
+      } catch (err: any) {
+        const msg = err.toString();
+        expect(msg.includes("InvalidCPIContext")).to.be.true;
+      }
     });
   });
 
