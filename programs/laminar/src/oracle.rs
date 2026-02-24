@@ -58,8 +58,8 @@ pub fn load_oracle_pricing_in_place<'info>(
 /// Read-only safe-price quote path for `get_safe_price`.
 /// 
 /// This never mutates `GlobalState`, but it still enforces freshness/confidence checks.
-pub fn quote_safe_price<'info> (
-  global_state: &mut GlobalState,
+pub fn quote_safe_price<'info>(
+  global_state: &GlobalState,
   clock: &Clock,
   remaining_accounts: &[AccountInfo<'info>],
 ) -> Result<OraclePricing> {
@@ -76,7 +76,7 @@ pub fn quote_safe_price<'info> (
   }
 }
 
-fn pricing_from_cached_snapshot(global_state: &mut GlobalState, clock: &Clock) -> Result<OraclePricing> {
+fn pricing_from_cached_snapshot(global_state: &GlobalState, clock: &Clock) -> Result<OraclePricing> {
   assert_oracle_freshness_and_confidence(
     clock.slot, 
     global_state.last_oracle_update_slot, 

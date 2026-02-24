@@ -13,6 +13,12 @@ pub mod oracle;
 use instructions::*;
 
 use crate::state::GLOBAL_STATE_SEED;
+use crate::constants::{
+    LST_RATE_BACKEND_MOCK, LST_RATE_BACKEND_SANCTUM_STAKE_POOL, ORACLE_BACKEND_MOCK,
+    ORACLE_BACKEND_PYTH_PUSH,
+};
+use crate::math::{mul_div_up, BPS_PRECISION};
+
 
 declare_id!("DNJkHdH2tzCG9V8RX2bKRZKHxZccYBkBjqqSsG9midvc");
 
@@ -102,7 +108,33 @@ pub mod laminar {
         new_lst_to_sol_rate: u64,
         new_oracle_confidence_usd: u64,
     ) -> Result<()> {
+        
         let global_state = &mut ctx.accounts.global_state;
+
+        require!(
+            global_state.oracle_backend == ORACLE_BACKEND_MOCK,
+            LaminarError::UnsupportedOracleBackend
+        );
+        require!(
+            global_state.lst_rate_backend == LST_RATE_BACKEND_MOCK,
+            LaminarError::UnsupportedLstRateBackend
+        );
+
+        require!(
+            new_oracle_confidence_usd < new_sol_price_usd,
+            LaminarError::SafePriceInvalid
+        );
+
+        let uncertainty_index_bps = mul_div_up(
+            new_oracle_confidence_usd,
+            BPS_PRECISION,
+            new_sol_price_usd,
+        )
+        .ok_or(LaminarError::ArithmeticOverflow)?;
+        require!(
+            uncertainty_index_bps <= global_state.max_conf_bps,
+            LaminarError::OracleConfidenceTooHigh
+        );
         
         require!(new_sol_price_usd > 0, LaminarError::ZeroAmount);
         require!(new_lst_to_sol_rate > 0, LaminarError::ZeroAmount);
@@ -115,6 +147,10 @@ pub mod laminar {
         global_state.operation_counter = global_state.operation_counter.saturating_add(1);
         global_state.mock_oracle_confidence_usd = new_oracle_confidence_usd;
         global_state.last_oracle_update_slot = ctx.accounts.clock.slot;
+        global_state.last_tvl_update_slot = ctx.accounts.clock.slot;
+        global_state.uncertainty_index_bps = uncertainty_index_bps;
+        global_state.last_lst_update_epoch = ctx.accounts.clock.epoch;
+
 
         msg!(
             "Oracle snapshot updated: slot={}, price={}, conf={}, lst_rate={}",
@@ -170,6 +206,107 @@ pub mod laminar {
     pub fn sync_exchange_rate(ctx: Context<SyncExchangeRate>) -> Result<()> {
         instructions::sync_exchange_rate::handler(ctx)
     }
+
+    /// Configure oracle and LST rate backends
+    /// Admin-only and intended to switch between local mock mode and production
+    pub fn set_oracle_sources(
+        ctx: Context<SetOracleSources>,
+        oracle_backend: u8,
+        pyth_sol_usd_price_account: Pubkey,
+        lst_rate_backend: u8,
+        lst_stake_pool: Pubkey,
+    ) -> Result<()> {
+        let global_state = &mut ctx.accounts.global_state;
+
+        match oracle_backend {
+            ORACLE_BACKEND_MOCK => {}
+            ORACLE_BACKEND_PYTH_PUSH => {
+                require!(
+                    pyth_sol_usd_price_account != Pubkey::default(),
+                    LaminarError::OracleFeedNotSet
+                );
+            }
+            _=> return err!(LaminarError::UnsupportedOracleBackend),
+        }
+
+        match lst_rate_backend {
+            LST_RATE_BACKEND_MOCK => {}
+            LST_RATE_BACKEND_SANCTUM_STAKE_POOL => {
+                require!(lst_stake_pool != Pubkey::default(), LaminarError::LstStakePoolNotSet);
+            }
+            _ => return err!(LaminarError::UnsupportedLstRateBackend),
+        }
+
+        global_state.oracle_backend = oracle_backend;
+        global_state.pyth_sol_usd_price_account = pyth_sol_usd_price_account;
+        global_state.lst_rate_backend = lst_rate_backend;
+        global_state.lst_stake_pool = lst_stake_pool;
+        global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+
+        emit!(crate::events::OracleConfigUpdated {
+            authority: ctx.accounts.authority.key(),
+            oracle_backend,
+            pyth_sol_usd_price_account,
+            lst_rate_backend,
+            lst_stake_pool,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    /// Refresh uncertainty index from current oracle confidence snapshot.
+    /// Permissionless: anyone may pay to keep oracle snapshot warm.
+    pub fn update_uncertainty_index(ctx: Context<UpdateUncertaintyIndex>) -> Result<()> {
+        let global_state = &mut ctx.accounts.global_state;
+        global_state.validate_version()?;
+
+        let pricing = crate::oracle::load_oracle_pricing_in_place(
+            global_state,
+            &ctx.accounts.clock,
+            ctx.remaining_accounts,
+        )?;
+
+        global_state.operation_counter = global_state.operation_counter.saturating_add(1);
+
+        emit!(crate::events::OracleSnapshotUpdated {
+            updater: ctx.accounts.updater.key(),
+            oracle_backend: global_state.oracle_backend,
+            ema_price_usd: pricing.price_ema_usd,
+            safe_price_usd: pricing.price_safe_usd,
+            confidence_usd: pricing.confidence_usd,
+            uncertainty_index_bps: pricing.uncertainty_index_bps,
+            slot: ctx.accounts.clock.slot,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
+
+    /// Read-only safe-price quote.
+    pub fn get_safe_price(ctx: Context<GetSafePrice>) -> Result<()> {
+        let global_state = &ctx.accounts.global_state;
+        global_state.validate_version()?;
+
+        let pricing = crate::oracle::quote_safe_price(
+            global_state,
+            &ctx.accounts.clock,
+            ctx.remaining_accounts,
+        )?;
+
+        emit!(crate::events::SafePriceQuoted {
+            requester: ctx.accounts.caller.key(),
+            oracle_backend: global_state.oracle_backend,
+            ema_price_usd: pricing.price_ema_usd,
+            safe_price_usd: pricing.price_safe_usd,
+            confidence_usd: pricing.confidence_usd,
+            uncertainty_index_bps: pricing.uncertainty_index_bps,
+            slot: ctx.accounts.clock.slot,
+            timestamp: ctx.accounts.clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -217,5 +354,51 @@ pub struct UpdateParameters<'info> {
     )]
     pub global_state: Account<'info, state::GlobalState>,
     
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct SetOracleSources<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        has_one = authority,
+        seeds = [GLOBAL_STATE_SEED],
+        bump
+    )]
+    pub global_state: Account<'info, state::GlobalState>,
+
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateUncertaintyIndex<'info> {
+    #[account(mut)]
+    pub updater: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GLOBAL_STATE_SEED],
+        bump,
+        constraint = global_state.to_account_info().owner == &crate::ID @ crate::error::LaminarError::InvalidAccountOwner,
+    )]
+    pub global_state: Account<'info, state::GlobalState>,
+
+    pub clock: Sysvar<'info, Clock>,
+}
+
+#[derive(Accounts)]
+pub struct GetSafePrice<'info> {
+    pub caller: Signer<'info>,
+
+    #[account(
+        seeds = [GLOBAL_STATE_SEED],
+        bump,
+        constraint = global_state.to_account_info().owner == &crate::ID @ crate::error::LaminarError::InvalidAccountOwner,
+    )]
+    pub global_state: Account<'info, state::GlobalState>,
+
     pub clock: Sysvar<'info, Clock>,
 }

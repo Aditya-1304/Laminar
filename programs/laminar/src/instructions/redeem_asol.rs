@@ -11,6 +11,9 @@ use crate::{constants:: MIN_PROTOCOL_TVL, events::AsolRedeemed, instructions::sy
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::constants::LST_RATE_BACKEND_MOCK;
+use crate::oracle::load_oracle_pricing_in_place;
+
 
 
 pub fn handler(
@@ -23,18 +26,22 @@ pub fn handler(
   assert_not_cpi_context()?;
 
   // sync first
-  {
-  let global_state = &mut ctx.accounts.global_state;
-  global_state.validate_version()?;
-  assert_lst_snapshot_fresh(
-    ctx.accounts.clock.slot,
-    global_state.last_tvl_update_slot,
-    global_state.max_oracle_staleness_slots,
-  )?;
-  sync_exchange_rate_in_place(global_state, ctx.accounts.clock.slot)?;
-  }
+    let pricing = {
+    let global_state = &mut ctx.accounts.global_state;
+    global_state.validate_version()?;
 
-  // read only borrow
+    if global_state.lst_rate_backend == LST_RATE_BACKEND_MOCK {
+      assert_lst_snapshot_fresh(
+        ctx.accounts.clock.slot,
+        global_state.last_tvl_update_slot,
+        global_state.max_oracle_staleness_slots,
+      )?;
+    }
+
+    sync_exchange_rate_in_place(global_state, &ctx.accounts.clock, ctx.remaining_accounts)?;
+    load_oracle_pricing_in_place(global_state, &ctx.accounts.clock, ctx.remaining_accounts)?
+  };
+
   let global_state = &ctx.accounts.global_state;
 
   assert_oracle_freshness_and_confidence(
@@ -48,7 +55,7 @@ pub fn handler(
   
   // Capture values
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
-  let sol_price_used = global_state.mock_sol_price_usd;
+  let sol_price_used = pricing.price_safe_usd;
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
   let current_asol_supply = global_state.asol_supply;
