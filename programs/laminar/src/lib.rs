@@ -7,6 +7,7 @@ pub mod instructions;
 pub mod error;
 pub mod events;
 pub mod constants;
+pub mod oracle;
 // pub mod reentrancy;
 
 use instructions::*;

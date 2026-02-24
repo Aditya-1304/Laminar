@@ -124,6 +124,23 @@ pub struct GlobalState {
 
   pub mock_oracle_confidence_usd: u64,
 
+  /// Oracle backend selector
+  /// 0 = mock cache, 1 = pyth push EMA account
+  pub oracle_backend: u8,
+
+  /// LST rate backend selector
+  /// 0 = mock cache, 1 = Sanctum-style stake-pool intrinsic pricing
+  pub lst_rate_backend: u8,
+
+  /// Configured Pyth SOL/USD price account (used when oracle_backend = 1)
+  pub pyth_sol_usd_price_account: Pubkey,
+
+  /// Configured stake-pool account for supported LST (used when lst_rate_backend = 1).
+  pub lst_stake_pool: Pubkey,
+
+  /// Last epoch when LST exchange rate was refreshed
+  pub last_lst_update_epoch: u64,
+
   pub _reserved: [u64; 2],
 }
 
@@ -168,6 +185,11 @@ impl GlobalState {
     8 + // last_tvl_update_slot
     8 + // last_oracle_update_slot
     8 + // mock_oracle_confidence_usd
+    1 + // oracle_backend
+    1 + // lst_rate_backend
+    32 + // pyth_sol_usd_price_account
+    32 + // lst_stake_pool
+    8 + // last_lst_update_epoch
     16; // _reserved (2 * 8 = 16)
 }
 
@@ -269,9 +291,13 @@ mod tests {
     last_tvl_update_slot: 0,
     last_oracle_update_slot: 0,
     mock_oracle_confidence_usd: 0,
+    oracle_backend: 0,
+    lst_rate_backend: 0,
+    pyth_sol_usd_price_account: Pubkey::default(),
+    lst_stake_pool: Pubkey::default(),
+    last_lst_update_epoch: 0,
     _reserved: [0; 2],
   };
-
     
     // Verify the manual LEN calculation matches what Borsh would serialize
     // The actual serialized size should be LEN - 8 (discriminator is added by Anchor)

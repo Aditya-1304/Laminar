@@ -98,4 +98,46 @@ pub enum LaminarError {
 
   #[msg("LST exchange-rate snapshot is stale - refresh exchange rate before pricing actions")]
   LstRateStale,
+
+  #[msg("Unsupported oracle backend")]
+  UnsupportedOracleBackend,
+
+  #[msg("Unsupported LST rate backend")]
+  UnsupportedLstRateBackend,
+
+  #[msg("Pyth SOL/USD price account is not configured")]
+  OracleFeedNotSet,
+
+  #[msg("Configured oracle feed account was not provided in remaining accounts")]
+  OracleFeedAccountMissing,
+
+  #[msg("Provided oracle feed account does not match configured feed")]
+  OracleFeedMismatch,
+
+  #[msg("Unable to decode Pyth price feed account")]
+  OracleFeedLoadFailed,
+
+  #[msg("Oracle price is invalid (non-positive or malformed)")]
+  OraclePriceInvalid,
+
+  #[msg("Oracle exponent is out of supported range")]
+  OracleExponentOutOfRange,
+
+  #[msg("Safe oracle price is invalid (EMA <= confidence)")]
+  SafePriceInvalid,
+
+  #[msg("LST stake-pool account is not configured")]
+  LstStakePoolNotSet,
+
+  #[msg("Configured LST stake-pool account was not provided in remaining accounts")]
+  LstStakePoolAccountMissing,
+
+  #[msg("Provided stake-pool account does not match configured source")]
+  LstStakePoolMismatch,
+
+  #[msg("Unable to decode stake-pool account state")]
+  LstStateLoadFailed,
+
+  #[msg("Derived LST->SOL rate is invalid")]
+  LstRateInvalid,
 } 
