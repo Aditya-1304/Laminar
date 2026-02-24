@@ -9,6 +9,8 @@ use crate::{constants:: MIN_PROTOCOL_TVL, events::AmUSDRedeemed, instructions::s
 use crate::math::*;
 use crate::invariants::*;
 use crate::error::LaminarError;
+use crate::constants::LST_RATE_BACKEND_MOCK;
+use crate::oracle::load_oracle_pricing_in_place;
 
 pub fn handler(
   ctx: Context<RedeemAmUSD>,
@@ -20,18 +22,22 @@ pub fn handler(
   assert_not_cpi_context()?;
 
   // sync first
-  {
-  let global_state = &mut ctx.accounts.global_state;
-  global_state.validate_version()?;
-  assert_lst_snapshot_fresh(
-    ctx.accounts.clock.slot,
-    global_state.last_tvl_update_slot,
-    global_state.max_oracle_staleness_slots,
-  )?;
-  sync_exchange_rate_in_place(global_state, ctx.accounts.clock.slot)?;
-  }
+    let pricing = {
+    let global_state = &mut ctx.accounts.global_state;
+    global_state.validate_version()?;
 
-  // read only borrow
+    if global_state.lst_rate_backend == LST_RATE_BACKEND_MOCK {
+      assert_lst_snapshot_fresh(
+        ctx.accounts.clock.slot,
+        global_state.last_tvl_update_slot,
+        global_state.max_oracle_staleness_slots,
+      )?;
+    }
+
+    sync_exchange_rate_in_place(global_state, &ctx.accounts.clock, ctx.remaining_accounts)?;
+    load_oracle_pricing_in_place(global_state, &ctx.accounts.clock, ctx.remaining_accounts)?
+  };
+
   let global_state = &ctx.accounts.global_state;
 
   assert_oracle_freshness_and_confidence(
@@ -44,7 +50,8 @@ pub fn handler(
   )?;
 
   // Capture values
-  let sol_price_used = global_state.mock_sol_price_usd;
+  let sol_price_redeem_usd = pricing.price_redeem_usd;
+  let sol_price_safe_usd = pricing.price_safe_usd;
   let lst_to_sol_rate = global_state.mock_lst_to_sol_rate;
   let current_lst_amount = global_state.total_lst_amount;
   let current_amusd_supply = global_state.amusd_supply;
@@ -54,6 +61,7 @@ pub fn handler(
   let fee_max_multiplier_bps = global_state.fee_max_multiplier_bps;
   let uncertainty_index_bps = global_state.uncertainty_index_bps;
   let uncertainty_max_bps = global_state.uncertainty_max_bps;
+
 
 
   let current_rounding_reserve = global_state.rounding_reserve_lamports;
@@ -73,7 +81,7 @@ pub fn handler(
   let old_tvl = compute_tvl_sol(current_lst_amount, lst_to_sol_rate).ok_or(LaminarError::MathOverflow)?;
 
   let old_liability = if current_amusd_supply > 0 {
-    compute_liability_sol(current_amusd_supply, sol_price_used).ok_or(LaminarError::MathOverflow)?
+    compute_liability_sol(current_amusd_supply, sol_price_safe_usd).ok_or(LaminarError::MathOverflow)?
   } else {
     0
   };
@@ -109,7 +117,7 @@ pub fn handler(
   msg!("amUSD net burn basis: {}", amusd_net_in);
 
   // Baseline par path (all-down)
-  let sol_value_par_down = mul_div_down(amusd_net_in, SOL_PRECISION, sol_price_used)
+  let sol_value_par_down = mul_div_down(amusd_net_in, SOL_PRECISION, sol_price_redeem_usd)
     .ok_or(LaminarError::MathOverflow)?;
   let lst_par_down = mul_div_down(sol_value_par_down, SOL_PRECISION, lst_to_sol_rate)
     .ok_or(LaminarError::MathOverflow)?;
@@ -126,7 +134,7 @@ pub fn handler(
     (sol_value_haircut, lst_haircut, 0u64, 3u64)
   } else {
     // Solvent path: user-favoring rounding, reserve debited by deterministic delta
-    let sol_value_up = mul_div_up(amusd_net_in, SOL_PRECISION, sol_price_used)
+    let sol_value_up = mul_div_up(amusd_net_in, SOL_PRECISION, sol_price_redeem_usd)
       .ok_or(LaminarError::MathOverflow)?;
     let lst_gross_up = mul_div_up(sol_value_up, SOL_PRECISION, lst_to_sol_rate)
       .ok_or(LaminarError::MathOverflow)?;
@@ -169,7 +177,7 @@ pub fn handler(
     .ok_or(LaminarError::InsufficientSupply)?;
 
   let new_liability = if new_amusd_supply > 0 {
-    compute_liability_sol(new_amusd_supply, sol_price_used)
+    compute_liability_sol(new_amusd_supply, sol_price_safe_usd)
       .ok_or(LaminarError::MathOverflow)?
   } else {
     0
@@ -196,7 +204,7 @@ pub fn handler(
 
   // Deterministic rounding bound for redeem_amusd path:
   // (Usd -> SOL, SOL -> LST) => (k_lamports = 2, k_usd = 1)
-  let rounding_bound_lamports = derive_rounding_bound_lamports(rounding_k_lamports, 1, sol_price_used)?;
+  let rounding_bound_lamports = derive_rounding_bound_lamports(rounding_k_lamports, 1, sol_price_safe_usd)?;
 
   require!(
     ctx.accounts.user_amusd_account.amount >= amusd_amount,
@@ -307,7 +315,7 @@ pub fn handler(
     new_tvl,
     old_cr_bps,
     new_cr_bps: new_cr,
-    sol_price_used,
+    sol_price_used: sol_price_redeem_usd,
     timestamp: ctx.accounts.clock.unix_timestamp,
   });
 

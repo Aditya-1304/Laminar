@@ -96,3 +96,37 @@ pub struct ParametersUpdated {
   pub new_target_cr_bps: u64,
   pub timestamp: i64,
 }
+
+#[event]
+pub struct OracleConfigUpdated {
+  pub authority: Pubkey,
+  pub oracle_backend: u8,
+  pub pyth_sol_usd_price_account: Pubkey,
+  pub lst_rate_backend: u8,
+  pub lst_stake_pool: Pubkey,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct OracleSnapshotUpdated {
+  pub updater: Pubkey,
+  pub oracle_backend: u8,
+  pub ema_price_usd: u64,
+  pub safe_price_usd: u64,
+  pub confidence_usd: u64,
+  pub uncertainty_index_bps: u64,
+  pub slot: u64,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct SafePriceQuoted {
+  pub requester: Pubkey,
+  pub oracle_backend: u8,
+  pub ema_price_usd: u64,
+  pub safe_price_usd: u64,
+  pub confidence_usd: u64,
+  pub uncertainty_index_bps: u64,
+  pub slot: u64,
+  pub timestamp: i64,
+}

@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn test_simulate_60_percent_price_drop() {
         // Initial state: TVL = 200 SOL, Liability = 100 SOL
-        let initial_tvl = 200 * SOL_PRECISION;
+        let _initial_tvl = 200 * SOL_PRECISION;
         let liability = 100 * SOL_PRECISION;
         let asol_supply = 100 * SOL_PRECISION;
         

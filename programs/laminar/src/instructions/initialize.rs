@@ -3,9 +3,8 @@
 
 use anchor_lang::prelude::*;
 use anchor_spl::{associated_token::AssociatedToken, token_interface::{Mint, TokenAccount, TokenInterface}};
-use crate::{constants::{AMUSD_MINT_FEE_BPS, AMUSD_REDEEM_FEE_BPS, ASOL_MINT_FEE_BPS, ASOL_REDEEM_FEE_BPS, DEFAULT_FEE_MAX_MULTIPLIER_BPS, DEFAULT_FEE_MIN_MULTIPLIER_BPS, DEFAULT_MAX_ASOL_MINT_PER_ROUND, DEFAULT_MAX_CONF_BPS, DEFAULT_MAX_LST_STALE_EPOCHS, DEFAULT_MAX_ORACLE_STALENESS_SLOTS, DEFAULT_NAV_FLOOR_LAMPORTS, DEFAULT_UNCERTAINTY_MAX_BPS}, error::LaminarError, state::*};
+use crate::{constants::{AMUSD_MINT_FEE_BPS, AMUSD_REDEEM_FEE_BPS, ASOL_MINT_FEE_BPS, ASOL_REDEEM_FEE_BPS, DEFAULT_FEE_MAX_MULTIPLIER_BPS, DEFAULT_FEE_MIN_MULTIPLIER_BPS, DEFAULT_MAX_ASOL_MINT_PER_ROUND, DEFAULT_MAX_CONF_BPS, DEFAULT_MAX_LST_STALE_EPOCHS, DEFAULT_MAX_ORACLE_STALENESS_SLOTS, DEFAULT_NAV_FLOOR_LAMPORTS, DEFAULT_UNCERTAINTY_MAX_BPS, DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS, LST_RATE_BACKEND_MOCK, ORACLE_BACKEND_MOCK}, error::LaminarError, state::*};
 use crate::math::{SOL_PRECISION};
-use crate::constants::DEFAULT_MAX_ROUNDING_RESERVE_LAMPORTS;
 
 pub fn handler(
   ctx: Context<Initialize>,
@@ -79,6 +78,11 @@ pub fn handler(
   global_state.mock_sol_price_usd = mock_sol_price_usd;
   global_state.mock_lst_to_sol_rate = mock_lst_to_sol_rate;
   global_state.mock_oracle_confidence_usd = 0;
+  global_state.oracle_backend = ORACLE_BACKEND_MOCK;
+  global_state.lst_rate_backend = LST_RATE_BACKEND_MOCK;
+  global_state.pyth_sol_usd_price_account = Pubkey::default();
+  global_state.lst_stake_pool = Pubkey::default();
+  global_state.last_lst_update_epoch = ctx.accounts.clock.epoch;
 
   global_state._reserved = [0; 2];
 

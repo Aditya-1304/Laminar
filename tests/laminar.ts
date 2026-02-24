@@ -48,6 +48,11 @@ const ASOL_REDEEM_FEE_BPS = 15;   // 0.15%
 const program = anchor.workspace.Laminar as Program<Laminar>;
 const cpiTester = anchor.workspace.CpiTester as Program<CpiTester>;
 
+const ORACLE_BACKEND_MOCK = 0;
+const ORACLE_BACKEND_PYTH_PUSH = 1;
+const LST_RATE_BACKEND_MOCK = 0;
+const LST_RATE_BACKEND_SANCTUM_STAKE_POOL = 1;
+
 interface ProtocolState {
   globalState: PublicKey;
   amusdMint: Keypair;
@@ -98,6 +103,13 @@ interface GlobalStateData {
   lastTvlUpdateSlot: BN;
   lastOracleUpdateSlot: BN;
   mockOracleConfidenceUsd: BN;
+
+  oracleBackend: number;
+  lstRateBackend: number;
+  pythSolUsdPriceAccount: PublicKey;
+  lstStakePool: PublicKey;
+  lastLstUpdateEpoch: BN;
+
 }
 
 
@@ -292,6 +304,28 @@ function feeBpsDecreaseWhenLow(baseFeeBps: number, crBps: BN, targetCrBps: BN): 
   return computeDynamicFeeBps(baseFeeBps, "risk_reducing", crBps, targetCrBps);
 }
 
+function buildOracleRemainingAccounts(state: GlobalStateData): anchor.web3.AccountMeta[] {
+  const metas: anchor.web3.AccountMeta[] = [];
+
+  if (state.oracleBackend === ORACLE_BACKEND_PYTH_PUSH) {
+    metas.push({
+      pubkey: state.pythSolUsdPriceAccount,
+      isSigner: false,
+      isWritable: false,
+    });
+  }
+
+  if (state.lstRateBackend === LST_RATE_BACKEND_SANCTUM_STAKE_POOL) {
+    metas.push({
+      pubkey: state.lstStakePool,
+      isSigner: false,
+      isWritable: false,
+    });
+  }
+
+  return metas;
+}
+
 
 describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   const provider = anchor.AnchorProvider.env();
@@ -483,6 +517,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   ): Promise<string> {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
 
     const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
       mint: protocolState.amusdMint.publicKey,
@@ -508,10 +543,11 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
         clock: SYSVAR_CLOCK_PUBKEY,
       } as any)
+      .remainingAccounts(remainingAccounts)
       .signers([user])
       .rpc();
-
   }
+
 
   /**
    * Redeem amUSD for a user
@@ -525,6 +561,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   ): Promise<string> {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
 
     const treasuryAmusdAccount = await anchor.utils.token.associatedAddress({
       mint: protocolState.amusdMint.publicKey,
@@ -550,6 +587,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
         clock: SYSVAR_CLOCK_PUBKEY,
       } as any)
+      .remainingAccounts(remainingAccounts)
       .signers([user])
       .rpc();
   }
@@ -566,6 +604,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   ): Promise<string> {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
 
     const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
       mint: protocolState.asolMint.publicKey,
@@ -591,6 +630,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
         clock: SYSVAR_CLOCK_PUBKEY,
       } as any)
+      .remainingAccounts(remainingAccounts)
       .signers([user])
       .rpc();
   }
@@ -608,6 +648,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
   ): Promise<string> {
     const state = await getGlobalState();
     const [vaultAuthority] = getVaultAuthorityPda();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
 
     const treasuryAsolAccount = await anchor.utils.token.associatedAddress({
       mint: protocolState.asolMint.publicKey,
@@ -633,6 +674,7 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
         clock: SYSVAR_CLOCK_PUBKEY,
       } as any)
+      .remainingAccounts(remainingAccounts)
       .signers([user])
       .rpc();
   }
@@ -719,14 +761,19 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
  * Useful for tests that assert stale -> refresh -> success flows.
  */
   async function syncExchangeRate(): Promise<string> {
+    const state = await getGlobalState();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
+
     return await program.methods
       .syncExchangeRate()
       .accounts({
         globalState: protocolState.globalState,
         clock: SYSVAR_CLOCK_PUBKEY,
       } as any)
+      .remainingAccounts(remainingAccounts)
       .rpc();
   }
+
 
   /**
  * Reset oracle and LST freshness to a known-good baseline.
@@ -2125,6 +2172,9 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         // Try to deposit wrong LST
         const [vaultAuthority] = getVaultAuthorityPda();
 
+        const state = await getGlobalState();
+        const remainingAccounts = buildOracleRemainingAccounts(state);
+
         await program.methods
           .mintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
           .accounts({
@@ -2134,21 +2184,23 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
             userAsolAccount: userSetup.asolAccount,
             treasuryAsolAccount: await anchor.utils.token.associatedAddress({
               mint: protocolState.asolMint.publicKey,
-              owner: (await getGlobalState()).treasury,
+              owner: state.treasury,
             }),
-            treasury: (await getGlobalState()).treasury,
-            userLstAccount: wrongMintAccount.address, // WRONG ACCOUNT
+            treasury: state.treasury,
+            userLstAccount: wrongMintAccount.address,
             vault: protocolState.vault,
             vaultAuthority: vaultAuthority,
-            lstMint: wrongMint, // WRONG MINT
+            lstMint: wrongMint,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
             instructionSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
             clock: SYSVAR_CLOCK_PUBKEY,
           } as any)
+          .remainingAccounts(remainingAccounts)
           .signers([userSetup.user])
           .rpc();
+
 
         expect.fail("Should reject wrong LST mint");
       } catch (err: any) {
@@ -2622,6 +2674,8 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         owner: state.treasury,
       });
 
+      const remainingAccounts = buildOracleRemainingAccounts(state);
+
       const ix = await program.methods
         .mintAsol(new BN(1 * LAMPORTS_PER_SOL), new BN(1))
         .accounts({
@@ -2640,7 +2694,9 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
           systemProgram: SystemProgram.programId,
           clock: SYSVAR_CLOCK_PUBKEY,
         } as any)
+        .remainingAccounts(remainingAccounts)
         .instruction();
+
 
       const tx = new Transaction().add(
         ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
