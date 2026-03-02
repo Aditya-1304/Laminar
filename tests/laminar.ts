@@ -53,7 +53,9 @@ const ORACLE_BACKEND_PYTH_PUSH = 1;
 const LST_RATE_BACKEND_MOCK = 0;
 const LST_RATE_BACKEND_SANCTUM_STAKE_POOL = 1;
 
-interface ProtocolState {
+const ZERO_PUBKEY = new PublicKey("11111111111111111111111111111111");
+
+type CoreProtocolState = {
   globalState: PublicKey;
   amusdMint: Keypair;
   asolMint: Keypair;
@@ -61,7 +63,17 @@ interface ProtocolState {
   vault: PublicKey;
   vaultAuthority: PublicKey;
   authority: Keypair;
-}
+};
+
+type StabilityProtocolState = {
+  stabilityPoolState: PublicKey;
+  stabilityPoolAuthority: PublicKey;
+  samusdMint: Keypair;
+  poolAmusdVault: PublicKey;
+  poolAsolVault: PublicKey;
+};
+
+type ProtocolState = CoreProtocolState & StabilityProtocolState;
 
 interface GlobalStateData {
   version: number;
@@ -382,11 +394,76 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     );
   }
 
+  function getStabilityPoolStatePda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("stability_pool_state")],
+      program.programId
+    );
+  }
+
+  function getStabilityPoolAuthorityPda(): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("stability_pool_authority")],
+      program.programId
+    );
+  }
+
+  async function initializeStabilityPool(core: CoreProtocolState): Promise<StabilityProtocolState> {
+    const [stabilityPoolState] = getStabilityPoolStatePda();
+    const [stabilityPoolAuthority] = getStabilityPoolAuthorityPda();
+
+    const samusdMint = Keypair.generate();
+
+    const poolAmusdVault = await anchor.utils.token.associatedAddress({
+      mint: core.amusdMint.publicKey,
+      owner: stabilityPoolAuthority,
+    });
+
+    const poolAsolVault = await anchor.utils.token.associatedAddress({
+      mint: core.asolMint.publicKey,
+      owner: stabilityPoolAuthority,
+    });
+
+    await program.methods
+      .initializeStabilityPool()
+      .accounts({
+        authority: core.authority.publicKey,
+        globalState: core.globalState,
+        stabilityPoolState,
+        stabilityPoolAuthority,
+        samusdMint: samusdMint.publicKey,
+        poolAmusdVault,
+        poolAsolVault,
+        amusdMint: core.amusdMint.publicKey,
+        asolMint: core.asolMint.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([core.authority, samusdMint])
+      .rpc();
+
+    return {
+      stabilityPoolState,
+      stabilityPoolAuthority,
+      samusdMint,
+      poolAmusdVault,
+      poolAsolVault,
+    };
+  }
+
+
+  async function getStabilityPoolState(): Promise<any> {
+    return await program.account.stabilityPoolState.fetch(protocolState.stabilityPoolState);
+  }
+
+
   /**
    * Intialize Protocol
    */
 
-  async function initializeProtocol(): Promise<ProtocolState> {
+  async function initializeProtocol(): Promise<CoreProtocolState> {
     const authority = Keypair.generate();
     await airdropSol(authority.publicKey, 10);
 
@@ -574,6 +651,11 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
         user: user.publicKey,
         globalState: protocolState.globalState,
         amusdMint: protocolState.amusdMint.publicKey,
+        asolMint: protocolState.asolMint.publicKey,
+        stabilityPoolState: protocolState.stabilityPoolState,
+        stabilityPoolAuthority: protocolState.stabilityPoolAuthority,
+        poolAmusdVault: protocolState.poolAmusdVault,
+        poolAsolVault: protocolState.poolAsolVault,
         userAmusdAccount: userAmusdAccount,
         treasury: state.treasury,
         treasuryAmusdAccount: treasuryAmusdAccount,
@@ -796,10 +878,182 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
     }
   }
 
+  async function depositAmusdToStabilityPool(
+    user: Keypair,
+    userAmusdAccount: PublicKey,
+    amusdAmount: BN,
+    minSamusdOut: BN,
+  ): Promise<{ tx: string; userSamusdAccount: PublicKey }> {
+    const state = await getGlobalState();
+    const userSamusdAccount = await anchor.utils.token.associatedAddress({
+      mint: protocolState.samusdMint.publicKey,
+      owner: user.publicKey,
+    });
+
+    const remainingAccounts = buildOracleRemainingAccounts(state);
+
+    const tx = await program.methods
+      .depositAmusd(amusdAmount, minSamusdOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        stabilityPoolState: protocolState.stabilityPoolState,
+        stabilityPoolAuthority: protocolState.stabilityPoolAuthority,
+        amusdMint: protocolState.amusdMint.publicKey,
+        asolMint: protocolState.asolMint.publicKey,
+        samusdMint: protocolState.samusdMint.publicKey,
+        userAmusdAccount,
+        userSamusdAccount,
+        poolAmusdVault: protocolState.poolAmusdVault,
+        poolAsolVault: protocolState.poolAsolVault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .remainingAccounts(remainingAccounts)
+      .signers([user])
+      .rpc();
+
+    return { tx, userSamusdAccount };
+  }
+
+  async function withdrawUnderlyingFromStabilityPool(
+    user: Keypair,
+    userSamusdAccount: PublicKey,
+    userAmusdAccount: PublicKey,
+    userAsolAccount: PublicKey,
+    samusdAmount: BN,
+    minAmusdOut: BN,
+    minAsolOut: BN,
+  ): Promise<string> {
+    return await program.methods
+      .withdrawUnderlying(samusdAmount, minAmusdOut, minAsolOut)
+      .accounts({
+        user: user.publicKey,
+        globalState: protocolState.globalState,
+        stabilityPoolState: protocolState.stabilityPoolState,
+        stabilityPoolAuthority: protocolState.stabilityPoolAuthority,
+        amusdMint: protocolState.amusdMint.publicKey,
+        asolMint: protocolState.asolMint.publicKey,
+        samusdMint: protocolState.samusdMint.publicKey,
+        userSamusdAccount,
+        userAmusdAccount,
+        userAsolAccount,
+        poolAmusdVault: protocolState.poolAmusdVault,
+        poolAsolVault: protocolState.poolAsolVault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([user])
+      .rpc();
+  }
+
+  async function harvestStabilityYield(): Promise<string> {
+    const state = await getGlobalState();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
+
+    return await program.methods
+      .harvestYield()
+      .accounts({
+        harvester: protocolState.authority.publicKey,
+        globalState: protocolState.globalState,
+        stabilityPoolState: protocolState.stabilityPoolState,
+        amusdMint: protocolState.amusdMint.publicKey,
+        poolAmusdVault: protocolState.poolAmusdVault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .remainingAccounts(remainingAccounts)
+      .signers([protocolState.authority])
+      .rpc();
+  }
+
+  async function executeDebtEquitySwapIx(): Promise<string> {
+    const state = await getGlobalState();
+    const remainingAccounts = buildOracleRemainingAccounts(state);
+
+    return await program.methods
+      .executeDebtEquitySwap()
+      .accounts({
+        executor: protocolState.authority.publicKey,
+        globalState: protocolState.globalState,
+        stabilityPoolState: protocolState.stabilityPoolState,
+        stabilityPoolAuthority: protocolState.stabilityPoolAuthority,
+        amusdMint: protocolState.amusdMint.publicKey,
+        asolMint: protocolState.asolMint.publicKey,
+        poolAmusdVault: protocolState.poolAmusdVault,
+        poolAsolVault: protocolState.poolAsolVault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .remainingAccounts(remainingAccounts)
+      .signers([protocolState.authority])
+      .rpc();
+  }
+
+  async function setOracleSources(
+    oracleBackend: number,
+    pythSolUsdPriceAccount: PublicKey,
+    lstRateBackend: number,
+    lstStakePool: PublicKey,
+  ): Promise<string> {
+    return await program.methods
+      .setOracleSources(
+        oracleBackend,
+        pythSolUsdPriceAccount,
+        lstRateBackend,
+        lstStakePool
+      )
+      .accounts({
+        authority: protocolState.authority.publicKey,
+        globalState: protocolState.globalState,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .signers([protocolState.authority])
+      .rpc();
+  }
+
+  async function quoteSafePrice(
+    remainingAccounts: anchor.web3.AccountMeta[] = [],
+  ): Promise<string> {
+    return await program.methods
+      .getSafePrice()
+      .accounts({
+        caller: protocolState.authority.publicKey,
+        globalState: protocolState.globalState,
+        clock: SYSVAR_CLOCK_PUBKEY,
+      } as any)
+      .remainingAccounts(remainingAccounts)
+      .signers([protocolState.authority])
+      .rpc();
+  }
+
+  async function createDummySystemAccount(space = 128): Promise<Keypair> {
+    const kp = Keypair.generate();
+    const lamports = await connection.getMinimumBalanceForRentExemption(space);
+
+    const tx = new Transaction().add(
+      SystemProgram.createAccount({
+        fromPubkey: protocolState.authority.publicKey,
+        newAccountPubkey: kp.publicKey,
+        lamports,
+        space,
+        programId: SystemProgram.programId,
+      })
+    );
+
+    await provider.sendAndConfirm(tx, [protocolState.authority, kp]);
+    return kp;
+  }
 
 
   before(async () => {
-    protocolState = await initializeProtocol();
+    const core = await initializeProtocol();
+    const stability = await initializeStabilityPool(core);
+    protocolState = { ...core, ...stability };
     console.log("Protocol initialized!");
     console.log("  GlobalState:", protocolState.globalState.toBase58());
     console.log("  amUSD Mint:", protocolState.amusdMint.publicKey.toBase58());
@@ -3057,5 +3311,315 @@ describe("Laminar Protocol - Phase 3 Integration Tests", () => {
       }
     });
   });
+
+  describe("53. Phase 5 Stability Pool Initialization", () => {
+    it("Initializes StabilityPoolState with correct bindings", async () => {
+      const sp = await getStabilityPoolState();
+
+      expect(sp.globalState.toBase58()).to.equal(protocolState.globalState.toBase58());
+      expect(sp.samusdMint.toBase58()).to.equal(protocolState.samusdMint.publicKey.toBase58());
+      expect(sp.poolAmusdVault.toBase58()).to.equal(protocolState.poolAmusdVault.toBase58());
+      expect(sp.poolAsolVault.toBase58()).to.equal(protocolState.poolAsolVault.toBase58());
+
+      expect(sp.totalAmusd.toNumber()).to.equal(0);
+      expect(sp.totalAsol.toNumber()).to.equal(0);
+      expect(sp.totalSamusd.toNumber()).to.equal(0);
+    });
+  });
+
+  describe("54. Phase 5 Stability Pool Deposit/Withdraw", () => {
+    it("Deposits amUSD, mints s_amUSD, then withdraws pro-rata underlying", async () => {
+      const userSetup = await setupUser(180);
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(60 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(25 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      const userAmusdBefore = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const depositAmt = BN.max(userAmusdBefore.divn(3), new BN(10_000_000)); // >= 10 amUSD
+
+      const { userSamusdAccount } = await depositAmusdToStabilityPool(
+        userSetup.user,
+        userSetup.amusdAccount,
+        depositAmt,
+        new BN(1),
+      );
+
+      const spAfterDeposit = await getStabilityPoolState();
+      const samusdBal = new BN((await getAccount(connection, userSamusdAccount)).amount.toString());
+
+      expect(spAfterDeposit.totalAmusd.gt(new BN(0))).to.be.true;
+      expect(spAfterDeposit.totalSamusd.gt(new BN(0))).to.be.true;
+      expect(samusdBal.gt(new BN(0))).to.be.true;
+
+      const burnSamusd = BN.max(samusdBal.divn(2), new BN(1));
+
+      const userAmusdMid = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const userAsolMid = new BN((await getAccount(connection, userSetup.asolAccount)).amount.toString());
+
+      await withdrawUnderlyingFromStabilityPool(
+        userSetup.user,
+        userSamusdAccount,
+        userSetup.amusdAccount,
+        userSetup.asolAccount,
+        burnSamusd,
+        new BN(1),
+        new BN(0),
+      );
+
+      const userAmusdAfter = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const userAsolAfter = new BN((await getAccount(connection, userSetup.asolAccount)).amount.toString());
+      const samusdAfter = new BN((await getAccount(connection, userSamusdAccount)).amount.toString());
+
+      expect(samusdAfter.lt(samusdBal)).to.be.true;
+      expect(userAmusdAfter.gt(userAmusdMid) || userAsolAfter.gt(userAsolMid)).to.be.true;
+    });
+  });
+
+  describe("55. Phase 5 Harvest Yield", () => {
+    it("Mints amUSD yield to Stability Pool when LST rate increases", async () => {
+      const spBefore = await getStabilityPoolState();
+      const gsBefore = await getGlobalState();
+
+      const bumpedRate = gsBefore.mockLstToSolRate.mul(new BN(101)).div(new BN(100));
+      await updateMockPrices(gsBefore.mockSolPriceUsd, bumpedRate, new BN(0));
+
+      await harvestStabilityYield();
+
+      const spAfter = await getStabilityPoolState();
+      const gsAfter = await getGlobalState();
+
+      expect(spAfter.totalAmusd.gte(spBefore.totalAmusd)).to.be.true;
+      expect(gsAfter.amusdSupply.gte(gsBefore.amusdSupply)).to.be.true;
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+      await syncExchangeRate();
+    });
+  });
+
+  describe("56. Phase 5 Debt-Equity Swap", () => {
+    it("Burns pool amUSD and mints pool aSOL when CR < min", async () => {
+      const userSetup = await setupUser(260);
+
+      await mintAsol(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.asolAccount,
+        new BN(120 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      await mintAmUSD(
+        userSetup.user,
+        userSetup.lstAccount,
+        userSetup.amusdAccount,
+        new BN(40 * LAMPORTS_PER_SOL),
+        new BN(1)
+      );
+
+      const userAmusd = new BN((await getAccount(connection, userSetup.amusdAccount)).amount.toString());
+      const dep = BN.max(userAmusd.divn(3), new BN(20_000_000)); // >= 20 amUSD
+
+      await depositAmusdToStabilityPool(
+        userSetup.user,
+        userSetup.amusdAccount,
+        dep,
+        new BN(1),
+      );
+
+      let state = await getGlobalState();
+      let tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const targetCr = state.minCrBps.sub(new BN(500));
+      let crashPrice = targetCr.mul(state.amusdSupply).mul(SOL_PRECISION).div(tvl.mul(BPS_PRECISION));
+      if (crashPrice.gte(state.mockSolPriceUsd)) {
+        crashPrice = state.mockSolPriceUsd.sub(new BN(1));
+      }
+      crashPrice = BN.max(crashPrice, new BN(1));
+
+      await updateMockPrices(crashPrice, state.mockLstToSolRate, new BN(0));
+
+      state = await getGlobalState();
+      tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      let liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const crBefore = computeCrBps(tvl, liability);
+      expect(crBefore.lt(state.minCrBps)).to.be.true;
+
+      const spBefore = await getStabilityPoolState();
+
+      await executeDebtEquitySwapIx();
+
+      const spAfter = await getStabilityPoolState();
+      const stateAfter = await getGlobalState();
+      const tvlAfter = computeTvlSol(stateAfter.totalLstAmount, stateAfter.mockLstToSolRate);
+      const liabilityAfter = computeLiabilitySol(stateAfter.amusdSupply, stateAfter.mockSolPriceUsd);
+      const crAfter = computeCrBps(tvlAfter, liabilityAfter);
+
+      expect(spAfter.totalAmusd.lt(spBefore.totalAmusd)).to.be.true;
+      expect(spAfter.totalAsol.gt(spBefore.totalAsol)).to.be.true;
+      expect(stateAfter.amusdSupply.lt(state.amusdSupply)).to.be.true;
+      expect(stateAfter.asolSupply.gt(state.asolSupply)).to.be.true;
+      expect(crAfter.gte(crBefore)).to.be.true;
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+      await syncExchangeRate();
+    });
+  });
+
+  describe("57. Phase 5 Drawdown-First in redeemAmUSD", () => {
+    it("Runs drawdown rounds before redeem when CR < min", async () => {
+      const debtor = await setupUser(320);
+      const lp = await setupUser(320);
+
+      await mintAsol(debtor.user, debtor.lstAccount, debtor.asolAccount, new BN(120 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAmUSD(debtor.user, debtor.lstAccount, debtor.amusdAccount, new BN(35 * LAMPORTS_PER_SOL), new BN(1));
+
+      await mintAsol(lp.user, lp.lstAccount, lp.asolAccount, new BN(120 * LAMPORTS_PER_SOL), new BN(1));
+      await mintAmUSD(lp.user, lp.lstAccount, lp.amusdAccount, new BN(35 * LAMPORTS_PER_SOL), new BN(1));
+
+      const lpAmusd = new BN((await getAccount(connection, lp.amusdAccount)).amount.toString());
+      await depositAmusdToStabilityPool(
+        lp.user,
+        lp.amusdAccount,
+        BN.max(lpAmusd.divn(2), new BN(50_000_000)), // >= 50 amUSD
+        new BN(1),
+      );
+
+      let state = await getGlobalState();
+      let tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      let desiredCr = state.minCrBps.sub(new BN(300));
+      desiredCr = BN.max(desiredCr, new BN(10_500));
+      let crashPrice = desiredCr.mul(state.amusdSupply).mul(SOL_PRECISION).div(tvl.mul(BPS_PRECISION));
+      if (crashPrice.gte(state.mockSolPriceUsd)) {
+        crashPrice = state.mockSolPriceUsd.sub(new BN(1));
+      }
+      crashPrice = BN.max(crashPrice, new BN(1));
+
+      await updateMockPrices(crashPrice, state.mockLstToSolRate, new BN(0));
+
+      state = await getGlobalState();
+      tvl = computeTvlSol(state.totalLstAmount, state.mockLstToSolRate);
+      const liability = computeLiabilitySol(state.amusdSupply, state.mockSolPriceUsd);
+      const crBefore = computeCrBps(tvl, liability);
+      expect(crBefore.lt(state.minCrBps)).to.be.true;
+
+      const spBefore = await getStabilityPoolState();
+
+      const debtorAmusd = new BN((await getAccount(connection, debtor.amusdAccount)).amount.toString());
+      const redeemAmt = BN.max(debtorAmusd.divn(5), new BN(5_000_000)); // >= 5 amUSD
+
+      const debtorLstBefore = new BN((await getAccount(connection, debtor.lstAccount)).amount.toString());
+
+      await redeemAmUSD(
+        debtor.user,
+        debtor.lstAccount,
+        debtor.amusdAccount,
+        redeemAmt,
+        new BN(100_000)
+      );
+
+      const debtorLstAfter = new BN((await getAccount(connection, debtor.lstAccount)).amount.toString());
+      const spAfter = await getStabilityPoolState();
+
+      expect(debtorLstAfter.gt(debtorLstBefore)).to.be.true;
+      expect(
+        spAfter.totalAmusd.lt(spBefore.totalAmusd) || spAfter.totalAsol.gt(spBefore.totalAsol)
+      ).to.be.true;
+
+      await updateMockPrices(MOCK_SOL_PRICE_USD, MOCK_LST_TO_SOL_RATE, new BN(0));
+      await syncExchangeRate();
+    });
+  });
+
+  describe("58. Phase 4 Oracle Backend Guard Verification", () => {
+    afterEach(async () => {
+      await setOracleSources(
+        ORACLE_BACKEND_MOCK,
+        ZERO_PUBKEY,
+        LST_RATE_BACKEND_MOCK,
+        ZERO_PUBKEY
+      );
+      await resetAndSyncSnapshots();
+    });
+
+    it("Pyth backend rejects missing and malformed feed accounts", async () => {
+      const dummyFeed = await createDummySystemAccount(64);
+
+      await setOracleSources(
+        ORACLE_BACKEND_PYTH_PUSH,
+        dummyFeed.publicKey,
+        LST_RATE_BACKEND_MOCK,
+        ZERO_PUBKEY
+      );
+
+      try {
+        await quoteSafePrice([]);
+        expect.fail("Expected OracleFeedAccountMissing");
+      } catch (err: any) {
+        expect(err.toString()).to.include("OracleFeedAccountMissing");
+      }
+
+      try {
+        await quoteSafePrice([
+          { pubkey: dummyFeed.publicKey, isSigner: false, isWritable: false }
+        ]);
+        expect.fail("Expected OracleFeedLoadFailed");
+      } catch (err: any) {
+        expect(err.toString()).to.include("OracleFeedLoadFailed");
+      }
+    });
+
+    it("Sanctum backend rejects missing and invalid stake-pool accounts", async () => {
+      const dummyStakePool = await createDummySystemAccount(512);
+
+      await setOracleSources(
+        ORACLE_BACKEND_MOCK,
+        ZERO_PUBKEY,
+        LST_RATE_BACKEND_SANCTUM_STAKE_POOL,
+        dummyStakePool.publicKey
+      );
+
+      try {
+        await program.methods
+          .syncExchangeRate()
+          .accounts({
+            globalState: protocolState.globalState,
+            clock: SYSVAR_CLOCK_PUBKEY,
+          } as any)
+          .rpc();
+        expect.fail("Expected LstStakePoolAccountMissing");
+      } catch (err: any) {
+        expect(err.toString()).to.include("LstStakePoolAccountMissing");
+      }
+
+      try {
+        await program.methods
+          .syncExchangeRate()
+          .accounts({
+            globalState: protocolState.globalState,
+            clock: SYSVAR_CLOCK_PUBKEY,
+          } as any)
+          .remainingAccounts([
+            { pubkey: dummyStakePool.publicKey, isSigner: false, isWritable: false }
+          ])
+          .rpc();
+        expect.fail("Expected LstStakePoolMismatch");
+      } catch (err: any) {
+        expect(err.toString()).to.include("LstStakePoolMismatch");
+      }
+    });
+  });
+
 
 });

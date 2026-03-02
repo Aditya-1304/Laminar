@@ -225,6 +225,73 @@ impl CollateralVault {
     64; // _reserved
 }
 
+#[account]
+pub struct StabilityPoolState {
+  /// Protocol version for migrations
+  pub version: u8,
+
+  /// PDA bump for this account
+  pub bump: u8,
+
+  /// PDA bump for stability pool authority signer
+  pub pool_authority_bump: u8,
+
+  /// Associated GlobalState singleton
+  pub global_state: Pubkey,
+
+  /// s_amUSD receipt mint
+  pub samusd_mint: Pubkey,
+
+  /// pool amusd vault ATA (this will be owned by stability pool authority PDA)
+  pub pool_amusd_vault: Pubkey,
+
+  /// Pool aSOL vault ATA (this will be owned by stability pool authority PDA)
+  pub pool_asol_vault: Pubkey,
+
+  /// A = total amUSD held by the pool
+  pub total_amusd: u64,
+
+  /// J = total aSOL held by the pool
+  pub total_asol: u64,
+
+  /// S = total s_amUSD supply tracked by state
+  pub total_samusd: u64,
+
+  /// Emergency circuit breaker (governance controls this)
+  pub withdrawls_paused: bool,
+
+  /// Last harvested LST->SOL rate snapshot used by harvest_yield
+  pub last_harvest_lst_to_sol_rate: u64,
+
+  pub _reserved: [u64; 4],
+}
+
+impl StabilityPoolState {
+  pub const LEN: usize =
+    8 +   // discriminator
+    1 +   // version
+    1 +   // bump
+    1 +   // pool_authority_bump
+    32 +  // global_state
+    32 +  // samusd_mint
+    32 +  // pool_amusd_vault
+    32 +  // pool_asol_vault
+    8 +   // total_amusd
+    8 +   // total_asol
+    8 +   // total_samusd
+    1 +   // withdrawals_paused
+    8 +   // last_harvest_lst_to_sol_rate
+    32;   // _reserved
+
+  pub fn validate_version(&self) -> Result<()> {
+    require!(self.version == CURRENT_VERSION, LaminarError::InvalidVersion);
+    Ok(())
+  }
+}
+
+pub const STABILITY_POOL_STATE_SEED: &[u8] = b"stability_pool_state";
+pub const STABILITY_POOL_AUTHORITY_SEED: &[u8] = b"stability_pool_authority";
+
 pub const GLOBAL_STATE_SEED: &[u8] = b"global_state";
 
 pub const VAULT_SEED: &[u8] = b"vault";

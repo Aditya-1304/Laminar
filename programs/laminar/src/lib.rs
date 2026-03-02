@@ -307,6 +307,48 @@ pub mod laminar {
 
         Ok(())
     }
+
+        pub fn initialize_stability_pool(ctx: Context<InitializeStabilityPool>) -> Result<()> {
+        instructions::stability_pool::initialize_stability_pool_handler(ctx)
+    }
+
+    pub fn deposit_amusd(
+        ctx: Context<DepositAmUSD>,
+        amusd_amount: u64,
+        min_samusd_out: u64,
+    ) -> Result<()> {
+        instructions::stability_pool::deposit_amusd_handler(ctx, amusd_amount, min_samusd_out)
+    }
+
+    pub fn withdraw_underlying(
+        ctx: Context<WithdrawUnderlying>,
+        samusd_amount: u64,
+        min_amusd_out: u64,
+        min_asol_out: u64,
+    ) -> Result<()> {
+        instructions::stability_pool::withdraw_underlying_handler(
+            ctx,
+            samusd_amount,
+            min_amusd_out,
+            min_asol_out,
+        )
+    }
+
+    pub fn harvest_yield(ctx: Context<HarvestYield>) -> Result<()> {
+        instructions::stability_pool::harvest_yield_handler(ctx)
+    }
+
+    pub fn execute_debt_equity_swap(ctx: Context<ExecuteDebtEquitySwap>) -> Result<()> {
+        instructions::stability_pool::execute_debt_equity_swap_handler(ctx)
+    }
+
+    pub fn set_stability_withdrawals_paused(
+        ctx: Context<SetStabilityWithdrawalsPaused>,
+        withdrawals_paused: bool,
+    ) -> Result<()> {
+        instructions::stability_pool::set_stability_withdrawals_paused_handler(ctx, withdrawals_paused)
+    }
+
 }
 
 #[derive(Accounts)]

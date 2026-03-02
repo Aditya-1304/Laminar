@@ -130,3 +130,61 @@ pub struct SafePriceQuoted {
   pub slot: u64,
   pub timestamp: i64,
 }
+
+#[event]
+pub struct StabilityPoolInitialized {
+  pub authority: Pubkey,
+  pub samusd_mint: Pubkey,
+  pub pool_amusd_vault: Pubkey,
+  pub pool_asol_vault: Pubkey,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct StabilityPoolDeposited {
+  pub user: Pubkey,
+  pub amusd_in: u64,
+  pub samusd_minted: u64,
+  pub total_amusd: u64,
+  pub total_asol: u64,
+  pub total_samusd: u64,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct StabilityPoolWithdrawn {
+  pub user: Pubkey,
+  pub samusd_burned: u64,
+  pub amusd_out : u64,
+  pub asol_out: u64,
+  pub total_amusd: u64,
+  pub total_asol: u64,
+  pub total_samusd: u64,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct StabilityYieldHarvested {
+  pub harvester: Pubkey,
+  pub old_rate: u64,
+  pub new_rate: u64,
+  pub yield_delta_sol: u64,
+  pub amusd_minted: u64,
+  pub negative_yield: bool,
+  pub total_amusd: u64,
+  pub timestamp: i64,
+}
+
+#[event]
+pub struct DebtEquitySwapExecuted {
+  pub executor: Pubkey,
+  pub amusd_burned: u64,
+  pub asol_minted: u64,
+  pub nav_conv: u64,
+  pub cr_before_bps: u64,
+  pub cr_after_bps: u64,
+  pub price_safe_usd: u64,
+  pub pool_amusd_after: u64,
+  pub pool_asol_after: u64,
+  pub timestamp: i64,
+}

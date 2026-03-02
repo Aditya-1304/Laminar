@@ -140,4 +140,22 @@ pub enum LaminarError {
 
   #[msg("Derived LST->SOL rate is invalid")]
   LstRateInvalid,
+
+  #[msg("Stability Pool withdrawls are currently paused")]
+  StabilityPoolWithdrawalsPaused,
+
+  #[msg("Stability Pool has sufficient liquidity for this action")]
+  StabilityPoolEmpty,
+
+  #[msg("Stability Pool state does not match provided token vault balances")]
+  StabilityPoolStateMismatch,
+
+  #[msg("No dept-equtiy conversion is required at current collateral ratio")]
+  NoConversionNeeded,
+
+  #[msg("Debt-equity conversion output is too small under current cap/floor constraints")]
+  ConversionOutputTooSmall,
+
+  #[msg("Debt-equity conversion exceeded configured per-round mint cap")]
+  ConversionCapExceeded,
 } 
