@@ -157,5 +157,5 @@ pub enum LaminarError {
   ConversionOutputTooSmall,
 
   #[msg("Debt-equity conversion exceeded configured per-round mint cap")]
-  ConversionCapExceded,
+  ConversionCapExceeded,
 } 

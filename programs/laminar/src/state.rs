@@ -231,7 +231,7 @@ pub struct StabilityPoolState {
   pub version: u8,
 
   /// PDA bump for this account
-  pub bumb: u8,
+  pub bump: u8,
 
   /// PDA bump for stability pool authority signer
   pub pool_authority_bump: u8,
