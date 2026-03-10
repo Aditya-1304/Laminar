@@ -1,0 +1,35 @@
+[workspace]
+members = [
+  "bins/api",
+  "bins/indexer",
+  "bins/keeper",
+  "bins/executor",
+  "crates/laminar-core",
+  "crates/laminar-chain",
+  "crates/laminar-store",
+  "crates/laminar-quote",
+  "crates/laminar-tx",
+  "crates/laminar-api",
+  "crates/laminar-indexer",
+  "crates/laminar-keeper",
+  "crates/laminar-telemetry",
+  "crates/laminar-config",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Laminar"]
+
+[workspace.dependencies]
+anyhow = "1"
+axum = "0.8"
+dotenvy = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

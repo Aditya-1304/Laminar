@@ -12,3 +12,7 @@ __pycache__
 .github
 analysis 
 analysis copy
+.vscode
+backend*.md
+
+.env

@@ -1,0 +1,11 @@
+[package]
+name = "laminar-keeper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+laminar-core = { path = "../laminar-core" }
+laminar-quote = { path = "../laminar-quote" }
+laminar-tx = { path = "../laminar-tx" }
