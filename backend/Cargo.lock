@@ -303,6 +303,10 @@ dependencies = [
 [[package]]
 name = "laminar-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "laminar-indexer"
