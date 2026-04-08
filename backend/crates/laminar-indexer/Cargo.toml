@@ -1,0 +1,10 @@
+[package]
+name = "laminar-indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+laminar-core = { path = "../laminar-core" }
+laminar-store = { path = "../laminar-store" }
