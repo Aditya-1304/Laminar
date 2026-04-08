@@ -6,3 +6,12 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+
+laminar-core = { path = "../laminar-core" }
+
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+spl-associated-token-account = "7.0.0"
+spl-token = "8.0.0"
+spl-token-2022 = "8.0.1"
