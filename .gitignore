@@ -14,5 +14,5 @@ analysis
 analysis copy
 .vscode
 backend*.md
-
+.codex
 .env
