@@ -1,11 +1,13 @@
-
 use laminar_core::{
     Address, BalanceSheetSnapshot, GlobalStateModel, LaminarProtocolSnapshot, LstRateBackend,
     LstRateSnapshot, OracleBackend, OracleSnapshot, ProjectionMetadata, StabilityPoolSnapshot,
 };
 use laminar_indexer::{
-    global_state_current_record_from_snapshot, ingestion_checkpoint_record,
-    stability_pool_current_record_from_snapshot, ProjectionCheckpoint, ProjectionWriteContext,
+    global_state_current_record_from_snapshot, global_state_history_record_from_snapshot,
+    ingestion_checkpoint_record, lst_rate_snapshot_record_from_snapshot,
+    oracle_snapshot_record_from_snapshot, protocol_snapshot_record_from_snapshot,
+    stability_pool_current_record_from_snapshot, stability_pool_history_record_from_snapshot,
+    ProjectionCheckpoint, ProjectionWriteContext,
 };
 
 fn addr(value: &str) -> Address {
@@ -70,7 +72,17 @@ fn sample_snapshot() -> LaminarProtocolSnapshot {
             last_harvest_lst_to_sol_rate: 1_060_000_000,
             ..StabilityPoolSnapshot::default()
         },
-        balance_sheet: BalanceSheetSnapshot::default(),
+        balance_sheet: BalanceSheetSnapshot {
+            tvl_lamports: 10_000,
+            liability_lamports: 4_000,
+            accounting_equity_lamports: 6_000,
+            claimable_equity_lamports: 5_900,
+            collateral_ratio_bps: Some(25_000),
+            nav_amusd_lamports: 1_000_000_000,
+            nav_asol_lamports: Some(1_100_000_000),
+            rounding_reserve_lamports: 77,
+            max_rounding_reserve_lamports: 1_000,
+        },
         metadata: ProjectionMetadata {
             indexed_slot: Some(55),
             simulated_slot: None,
@@ -99,6 +111,19 @@ fn maps_global_state_snapshot_into_current_record() {
 }
 
 #[test]
+fn maps_global_state_history_record() {
+    let snapshot = sample_snapshot();
+    let context = ProjectionWriteContext::new("global_state").with_tx_signature("sig-h1");
+
+    let record = global_state_history_record_from_snapshot(&context, &snapshot).unwrap();
+
+    assert_eq!(record.global_state_pubkey, "global_state");
+    assert_eq!(record.projection_slot, 55);
+    assert_eq!(record.tx_signature.as_deref(), Some("sig-h1"));
+    assert_eq!(record.snapshot["authority"], "authority");
+}
+
+#[test]
 fn maps_stability_pool_snapshot_when_pool_pubkey_is_present() {
     let snapshot = sample_snapshot();
     let context = ProjectionWriteContext::new("global_state")
@@ -123,13 +148,91 @@ fn maps_stability_pool_snapshot_when_pool_pubkey_is_present() {
 }
 
 #[test]
+fn maps_stability_pool_history_when_pool_pubkey_is_present() {
+    let snapshot = sample_snapshot();
+    let context = ProjectionWriteContext::new("global_state")
+        .with_stability_pool_pubkey("stability_pool")
+        .with_tx_signature("sig-h2");
+
+    let record = stability_pool_history_record_from_snapshot(&context, &snapshot)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.stability_pool_pubkey, "stability_pool");
+    assert_eq!(record.global_state_pubkey, "global_state");
+    assert_eq!(record.tx_signature.as_deref(), Some("sig-h2"));
+    assert_eq!(record.snapshot["samusd_mint"], "samusd");
+}
+
+#[test]
 fn skips_stability_pool_write_when_pubkey_is_absent() {
     let snapshot = sample_snapshot();
     let context = ProjectionWriteContext::new("global_state");
 
-    let record = stability_pool_current_record_from_snapshot(&context, &snapshot).unwrap();
+    let current = stability_pool_current_record_from_snapshot(&context, &snapshot).unwrap();
+    let history = stability_pool_history_record_from_snapshot(&context, &snapshot).unwrap();
 
-    assert!(record.is_none());
+    assert!(current.is_none());
+    assert!(history.is_none());
+}
+
+#[test]
+fn maps_oracle_snapshot_record() {
+    let snapshot = sample_snapshot();
+    let context = ProjectionWriteContext::new("global_state").with_tx_signature("sig-oracle");
+
+    let record = oracle_snapshot_record_from_snapshot(&context, &snapshot).unwrap();
+
+    assert_eq!(record.projection_slot, 55);
+    assert_eq!(record.global_state_pubkey, "global_state");
+    assert_eq!(record.oracle_backend, "pyth_push");
+    assert_eq!(record.price_safe_usd, 100);
+    assert_eq!(record.price_redeem_usd, 101);
+    assert_eq!(record.last_update_slot, Some(40));
+    assert_eq!(record.max_staleness_slots, 5);
+    assert_eq!(record.raw_snapshot["confidence_bps"], 10);
+}
+
+#[test]
+fn maps_lst_rate_snapshot_record() {
+    let snapshot = sample_snapshot();
+    let context = ProjectionWriteContext::new("global_state").with_tx_signature("sig-lst");
+
+    let record = lst_rate_snapshot_record_from_snapshot(&context, &snapshot).unwrap();
+
+    assert_eq!(record.projection_slot, 55);
+    assert_eq!(record.global_state_pubkey, "global_state");
+    assert_eq!(record.lst_rate_backend, "sanctum_stake_pool");
+    assert_eq!(record.supported_lst_mint, "lst");
+    assert_eq!(record.stake_pool.as_deref(), Some("stake_pool"));
+    assert_eq!(record.lst_to_sol_rate, 1_050_000_000);
+    assert_eq!(record.last_tvl_update_slot, Some(41));
+    assert_eq!(record.last_lst_update_epoch, Some(7));
+    assert_eq!(record.max_lst_stale_epochs, Some(2));
+}
+
+#[test]
+fn maps_protocol_snapshot_record() {
+    let snapshot = sample_snapshot();
+    let context = ProjectionWriteContext::new("global_state")
+        .with_stability_pool_pubkey("stability_pool")
+        .with_tx_signature("sig-protocol");
+
+    let record = protocol_snapshot_record_from_snapshot(&context, &snapshot).unwrap();
+
+    assert_eq!(record.projection_slot, 55);
+    assert_eq!(record.global_state_pubkey, "global_state");
+    assert_eq!(
+        record.stability_pool_pubkey.as_deref(),
+        Some("stability_pool")
+    );
+    assert_eq!(record.tvl_sol_lamports, 10_000);
+    assert_eq!(record.liability_sol_lamports, 4_000);
+    assert_eq!(record.claimable_equity_sol_lamports, 5_900);
+    assert_eq!(record.accounting_equity_sol_lamports, 6_000);
+    assert_eq!(record.cr_bps, Some(25_000));
+    assert_eq!(record.stability_withdrawals_paused, Some(true));
+    assert_eq!(record.snapshot["global"]["authority"], "authority");
 }
 
 #[test]

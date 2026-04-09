@@ -66,6 +66,26 @@ impl LaminarStores {
     pub fn keeper_jobs(&self) -> KeeperJobRepository {
         KeeperJobRepository::new(self.postgres.pool())
     }
+
+    pub fn global_state_history(&self) -> GlobalStateHistoryRepository {
+        GlobalStateHistoryRepository::new(self.postgres.pool())
+    }
+
+    pub fn stability_pool_history(&self) -> StabilityPoolHistoryRepository {
+        StabilityPoolHistoryRepository::new(self.postgres.pool())
+    }
+
+    pub fn oracle_snapshots(&self) -> OracleSnapshotRepository {
+        OracleSnapshotRepository::new(self.postgres.pool())
+    }
+
+    pub fn lst_rate_snapshots(&self) -> LstRateSnapshotRepository {
+        LstRateSnapshotRepository::new(self.postgres.pool())
+    }
+
+    pub fn protocol_snapshots(&self) -> ProtocolSnapshotRepository {
+        ProtocolSnapshotRepository::new(self.postgres.pool())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -768,6 +788,320 @@ impl KeeperJobRepository {
         .bind(status)
         .bind(output)
         .bind(error_text)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalStateHistoryRecord {
+    pub global_state_pubkey: String,
+    pub projection_slot: i64,
+    pub tx_signature: Option<String>,
+    pub snapshot: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalStateHistoryRepository {
+    pool: PgPool,
+}
+
+impl GlobalStateHistoryRepository {
+    pub fn new(pool: &PgPool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    pub async fn insert(&self, record: &GlobalStateHistoryRecord) -> Result<(), RepositoryError> {
+        sqlx::query(
+            r#"
+            insert into global_state_history (
+                global_state_pubkey,
+                projection_slot,
+                tx_signature,
+                snapshot
+            ) values ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(&record.global_state_pubkey)
+        .bind(record.projection_slot)
+        .bind(&record.tx_signature)
+        .bind(record.snapshot.clone())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StabilityPoolHistoryRecord {
+    pub stability_pool_pubkey: String,
+    pub global_state_pubkey: String,
+    pub projection_slot: i64,
+    pub tx_signature: Option<String>,
+    pub snapshot: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct StabilityPoolHistoryRepository {
+    pool: PgPool,
+}
+
+impl StabilityPoolHistoryRepository {
+    pub fn new(pool: &PgPool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    pub async fn insert(&self, record: &StabilityPoolHistoryRecord) -> Result<(), RepositoryError> {
+        sqlx::query(
+            r#"
+            insert into stability_pool_history (
+                stability_pool_pubkey,
+                global_state_pubkey,
+                projection_slot,
+                tx_signature,
+                snapshot
+            ) values ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(&record.stability_pool_pubkey)
+        .bind(&record.global_state_pubkey)
+        .bind(record.projection_slot)
+        .bind(&record.tx_signature)
+        .bind(record.snapshot.clone())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleSnapshotRecord {
+    pub projection_slot: i64,
+    pub tx_signature: Option<String>,
+    pub global_state_pubkey: String,
+    pub oracle_backend: String,
+    pub price_safe_usd: u64,
+    pub price_redeem_usd: u64,
+    pub price_ema_usd: u64,
+    pub confidence_usd: u64,
+    pub confidence_bps: u64,
+    pub uncertainty_index_bps: u64,
+    pub last_update_slot: Option<i64>,
+    pub max_staleness_slots: u64,
+    pub max_conf_bps: u64,
+    pub raw_snapshot: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct OracleSnapshotRepository {
+    pool: PgPool,
+}
+
+impl OracleSnapshotRepository {
+    pub fn new(pool: &PgPool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    pub async fn insert(&self, record: &OracleSnapshotRecord) -> Result<(), RepositoryError> {
+        sqlx::query(
+            r#"
+            insert into oracle_snapshots (
+                projection_slot,
+                tx_signature,
+                global_state_pubkey,
+                oracle_backend,
+                price_safe_usd,
+                price_redeem_usd,
+                price_ema_usd,
+                confidence_usd,
+                confidence_bps,
+                uncertainty_index_bps,
+                last_update_slot,
+                max_staleness_slots,
+                max_conf_bps,
+                raw_snapshot
+            ) values (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5::numeric,
+                $6::numeric,
+                $7::numeric,
+                $8::numeric,
+                $9::numeric,
+                $10::numeric,
+                $11,
+                $12::numeric,
+                $13::numeric,
+                $14
+            )
+            "#,
+        )
+        .bind(record.projection_slot)
+        .bind(&record.tx_signature)
+        .bind(&record.global_state_pubkey)
+        .bind(&record.oracle_backend)
+        .bind(record.price_safe_usd.to_string())
+        .bind(record.price_redeem_usd.to_string())
+        .bind(record.price_ema_usd.to_string())
+        .bind(record.confidence_usd.to_string())
+        .bind(record.confidence_bps.to_string())
+        .bind(record.uncertainty_index_bps.to_string())
+        .bind(record.last_update_slot)
+        .bind(record.max_staleness_slots.to_string())
+        .bind(record.max_conf_bps.to_string())
+        .bind(record.raw_snapshot.clone())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LstRateSnapshotRecord {
+    pub projection_slot: i64,
+    pub tx_signature: Option<String>,
+    pub global_state_pubkey: String,
+    pub lst_rate_backend: String,
+    pub supported_lst_mint: String,
+    pub stake_pool: Option<String>,
+    pub lst_to_sol_rate: u64,
+    pub last_tvl_update_slot: Option<i64>,
+    pub last_lst_update_epoch: Option<u64>,
+    pub max_lst_stale_epochs: Option<u64>,
+    pub raw_snapshot: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct LstRateSnapshotRepository {
+    pool: PgPool,
+}
+
+impl LstRateSnapshotRepository {
+    pub fn new(pool: &PgPool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    pub async fn insert(&self, record: &LstRateSnapshotRecord) -> Result<(), RepositoryError> {
+        sqlx::query(
+            r#"
+            insert into lst_rate_snapshots (
+                projection_slot,
+                tx_signature,
+                global_state_pubkey,
+                lst_rate_backend,
+                supported_lst_mint,
+                stake_pool,
+                lst_to_sol_rate,
+                last_tvl_update_slot,
+                last_lst_update_epoch,
+                max_lst_stale_epochs,
+                raw_snapshot
+            ) values (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                $7::numeric,
+                $8,
+                $9::numeric,
+                $10::numeric,
+                $11
+            )
+            "#,
+        )
+        .bind(record.projection_slot)
+        .bind(&record.tx_signature)
+        .bind(&record.global_state_pubkey)
+        .bind(&record.lst_rate_backend)
+        .bind(&record.supported_lst_mint)
+        .bind(&record.stake_pool)
+        .bind(record.lst_to_sol_rate.to_string())
+        .bind(record.last_tvl_update_slot)
+        .bind(record.last_lst_update_epoch.map(|v| v.to_string()))
+        .bind(record.max_lst_stale_epochs.map(|v| v.to_string()))
+        .bind(record.raw_snapshot.clone())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolSnapshotRecord {
+    pub projection_slot: i64,
+    pub tx_signature: Option<String>,
+    pub global_state_pubkey: String,
+    pub stability_pool_pubkey: Option<String>,
+    pub tvl_sol_lamports: u64,
+    pub liability_sol_lamports: u64,
+    pub claimable_equity_sol_lamports: u64,
+    pub accounting_equity_sol_lamports: i128,
+    pub cr_bps: Option<u64>,
+    pub stability_withdrawals_paused: Option<bool>,
+    pub snapshot: JsonValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtocolSnapshotRepository {
+    pool: PgPool,
+}
+
+impl ProtocolSnapshotRepository {
+    pub fn new(pool: &PgPool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    pub async fn insert(&self, record: &ProtocolSnapshotRecord) -> Result<(), RepositoryError> {
+        sqlx::query(
+            r#"
+            insert into protocol_snapshots (
+                projection_slot,
+                tx_signature,
+                global_state_pubkey,
+                stability_pool_pubkey,
+                tvl_sol_lamports,
+                liability_sol_lamports,
+                claimable_equity_sol_lamports,
+                accounting_equity_sol_lamports,
+                cr_bps,
+                stability_withdrawals_paused,
+                snapshot
+            ) values (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5::numeric,
+                $6::numeric,
+                $7::numeric,
+                $8::numeric,
+                $9::numeric,
+                $10,
+                $11
+            )
+            "#,
+        )
+        .bind(record.projection_slot)
+        .bind(&record.tx_signature)
+        .bind(&record.global_state_pubkey)
+        .bind(&record.stability_pool_pubkey)
+        .bind(record.tvl_sol_lamports.to_string())
+        .bind(record.liability_sol_lamports.to_string())
+        .bind(record.claimable_equity_sol_lamports.to_string())
+        .bind(record.accounting_equity_sol_lamports.to_string())
+        .bind(record.cr_bps.map(|v| v.to_string()))
+        .bind(record.stability_withdrawals_paused)
+        .bind(record.snapshot.clone())
         .execute(&self.pool)
         .await?;
 

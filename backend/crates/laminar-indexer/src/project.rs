@@ -2,9 +2,12 @@ use std::convert::TryFrom;
 
 use laminar_core::{Address, LaminarProtocolSnapshot, LstRateBackend, OracleBackend};
 use laminar_store::{
-    GlobalStateCurrentRecord, GlobalStateCurrentRepository, IngestionCheckpointRecord,
-    IngestionCheckpointRepository, LaminarStores, RepositoryError, StabilityPoolCurrentRecord,
-    StabilityPoolCurrentRepository,
+    GlobalStateCurrentRecord, GlobalStateCurrentRepository, GlobalStateHistoryRecord,
+    GlobalStateHistoryRepository, IngestionCheckpointRecord, IngestionCheckpointRepository,
+    LaminarStores, LstRateSnapshotRecord, LstRateSnapshotRepository, OracleSnapshotRecord,
+    OracleSnapshotRepository, ProtocolSnapshotRecord, ProtocolSnapshotRepository, RepositoryError,
+    StabilityPoolCurrentRecord, StabilityPoolCurrentRepository, StabilityPoolHistoryRecord,
+    StabilityPoolHistoryRepository,
 };
 use serde_json::Value as JsonValue;
 use thiserror::Error;
@@ -64,7 +67,12 @@ pub enum ProjectionError {
 pub struct LaminarProjectionWriter {
     ingestion_checkpoints: IngestionCheckpointRepository,
     global_state_current: GlobalStateCurrentRepository,
+    global_state_history: GlobalStateHistoryRepository,
     stability_pool_current: StabilityPoolCurrentRepository,
+    stability_pool_history: StabilityPoolHistoryRepository,
+    oracle_snapshots: OracleSnapshotRepository,
+    lst_rate_snapshots: LstRateSnapshotRepository,
+    protocol_snapshots: ProtocolSnapshotRepository,
 }
 
 impl LaminarProjectionWriter {
@@ -72,7 +80,12 @@ impl LaminarProjectionWriter {
         Self {
             ingestion_checkpoints: stores.ingestion_checkpoints(),
             global_state_current: stores.global_state_current(),
+            global_state_history: stores.global_state_history(),
             stability_pool_current: stores.stability_pool_current(),
+            stability_pool_history: stores.stability_pool_history(),
+            oracle_snapshots: stores.oracle_snapshots(),
+            lst_rate_snapshots: stores.lst_rate_snapshots(),
+            protocol_snapshots: stores.protocol_snapshots(),
         }
     }
 
@@ -81,17 +94,36 @@ impl LaminarProjectionWriter {
         context: &ProjectionWriteContext,
         snapshot: &LaminarProtocolSnapshot,
     ) -> Result<(), ProjectionError> {
-        let global_state_record = global_state_current_record_from_snapshot(context, snapshot)?;
         self.global_state_current
-            .upsert(&global_state_record)
+            .upsert(&global_state_current_record_from_snapshot(
+                context, snapshot,
+            )?)
             .await?;
 
-        if let Some(stability_pool_record) =
-            stability_pool_current_record_from_snapshot(context, snapshot)?
-        {
-            self.stability_pool_current
-                .upsert(&stability_pool_record)
-                .await?;
+        self.global_state_history
+            .insert(&global_state_history_record_from_snapshot(
+                context, snapshot,
+            )?)
+            .await?;
+
+        self.oracle_snapshots
+            .insert(&oracle_snapshot_record_from_snapshot(context, snapshot)?)
+            .await?;
+
+        self.lst_rate_snapshots
+            .insert(&lst_rate_snapshot_record_from_snapshot(context, snapshot)?)
+            .await?;
+
+        self.protocol_snapshots
+            .insert(&protocol_snapshot_record_from_snapshot(context, snapshot)?)
+            .await?;
+
+        if let Some(record) = stability_pool_current_record_from_snapshot(context, snapshot)? {
+            self.stability_pool_current.upsert(&record).await?;
+        }
+
+        if let Some(record) = stability_pool_history_record_from_snapshot(context, snapshot)? {
+            self.stability_pool_history.insert(&record).await?;
         }
 
         Ok(())
@@ -140,6 +172,18 @@ pub fn global_state_current_record_from_snapshot(
     })
 }
 
+pub fn global_state_history_record_from_snapshot(
+    context: &ProjectionWriteContext,
+    snapshot: &LaminarProtocolSnapshot,
+) -> Result<GlobalStateHistoryRecord, ProjectionError> {
+    Ok(GlobalStateHistoryRecord {
+        global_state_pubkey: required_address("global_state_pubkey", &context.global_state_pubkey)?,
+        projection_slot: projection_slot(snapshot)?,
+        tx_signature: context.tx_signature.clone(),
+        snapshot: serde_json::to_value(&snapshot.global)?,
+    })
+}
+
 pub fn stability_pool_current_record_from_snapshot(
     context: &ProjectionWriteContext,
     snapshot: &LaminarProtocolSnapshot,
@@ -163,6 +207,89 @@ pub fn stability_pool_current_record_from_snapshot(
         last_harvest_lst_to_sol_rate: snapshot.stability_pool.last_harvest_lst_to_sol_rate,
         raw_model: serde_json::to_value(&snapshot.stability_pool)?,
     }))
+}
+
+pub fn stability_pool_history_record_from_snapshot(
+    context: &ProjectionWriteContext,
+    snapshot: &LaminarProtocolSnapshot,
+) -> Result<Option<StabilityPoolHistoryRecord>, ProjectionError> {
+    let Some(stability_pool_pubkey) = context.stability_pool_pubkey.as_ref() else {
+        return Ok(None);
+    };
+
+    Ok(Some(StabilityPoolHistoryRecord {
+        stability_pool_pubkey: required_address("stability_pool_pubkey", stability_pool_pubkey)?,
+        global_state_pubkey: required_address("global_state_pubkey", &context.global_state_pubkey)?,
+        projection_slot: projection_slot(snapshot)?,
+        tx_signature: context.tx_signature.clone(),
+        snapshot: serde_json::to_value(&snapshot.stability_pool)?,
+    }))
+}
+
+pub fn oracle_snapshot_record_from_snapshot(
+    context: &ProjectionWriteContext,
+    snapshot: &LaminarProtocolSnapshot,
+) -> Result<OracleSnapshotRecord, ProjectionError> {
+    Ok(OracleSnapshotRecord {
+        projection_slot: projection_slot(snapshot)?,
+        tx_signature: context.tx_signature.clone(),
+        global_state_pubkey: required_address("global_state_pubkey", &context.global_state_pubkey)?,
+        oracle_backend: oracle_backend_name(snapshot.oracle.backend),
+        price_safe_usd: snapshot.oracle.price_safe_usd,
+        price_redeem_usd: snapshot.oracle.price_redeem_usd,
+        price_ema_usd: snapshot.oracle.price_ema_usd,
+        confidence_usd: snapshot.oracle.confidence_usd,
+        confidence_bps: snapshot.oracle.confidence_bps,
+        uncertainty_index_bps: snapshot.oracle.uncertainty_index_bps,
+        last_update_slot: Some(slot_to_i64(snapshot.oracle.last_update_slot)?),
+        max_staleness_slots: snapshot.oracle.max_staleness_slots,
+        max_conf_bps: snapshot.oracle.max_conf_bps,
+        raw_snapshot: serde_json::to_value(&snapshot.oracle)?,
+    })
+}
+
+pub fn lst_rate_snapshot_record_from_snapshot(
+    context: &ProjectionWriteContext,
+    snapshot: &LaminarProtocolSnapshot,
+) -> Result<LstRateSnapshotRecord, ProjectionError> {
+    Ok(LstRateSnapshotRecord {
+        projection_slot: projection_slot(snapshot)?,
+        tx_signature: context.tx_signature.clone(),
+        global_state_pubkey: required_address("global_state_pubkey", &context.global_state_pubkey)?,
+        lst_rate_backend: lst_rate_backend_name(snapshot.lst_rate.backend),
+        supported_lst_mint: snapshot.lst_rate.supported_lst_mint.as_str().to_owned(),
+        stake_pool: optional_address(&snapshot.lst_rate.stake_pool),
+        lst_to_sol_rate: snapshot.lst_rate.lst_to_sol_rate,
+        last_tvl_update_slot: Some(slot_to_i64(snapshot.lst_rate.last_tvl_update_slot)?),
+        last_lst_update_epoch: Some(snapshot.lst_rate.last_lst_update_epoch),
+        max_lst_stale_epochs: Some(snapshot.lst_rate.max_lst_stale_epochs),
+        raw_snapshot: serde_json::to_value(&snapshot.lst_rate)?,
+    })
+}
+
+pub fn protocol_snapshot_record_from_snapshot(
+    context: &ProjectionWriteContext,
+    snapshot: &LaminarProtocolSnapshot,
+) -> Result<ProtocolSnapshotRecord, ProjectionError> {
+    Ok(ProtocolSnapshotRecord {
+        projection_slot: projection_slot(snapshot)?,
+        tx_signature: context.tx_signature.clone(),
+        global_state_pubkey: required_address("global_state_pubkey", &context.global_state_pubkey)?,
+        stability_pool_pubkey: context
+            .stability_pool_pubkey
+            .as_ref()
+            .map(|address| address.as_str().to_owned()),
+        tvl_sol_lamports: snapshot.balance_sheet.tvl_lamports,
+        liability_sol_lamports: snapshot.balance_sheet.liability_lamports,
+        claimable_equity_sol_lamports: snapshot.balance_sheet.claimable_equity_lamports,
+        accounting_equity_sol_lamports: snapshot.balance_sheet.accounting_equity_lamports,
+        cr_bps: snapshot.balance_sheet.collateral_ratio_bps,
+        stability_withdrawals_paused: context
+            .stability_pool_pubkey
+            .as_ref()
+            .map(|_| snapshot.stability_pool.stability_withdrawals_paused),
+        snapshot: serde_json::to_value(snapshot)?,
+    })
 }
 
 pub fn ingestion_checkpoint_record(
