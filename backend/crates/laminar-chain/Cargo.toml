@@ -7,12 +7,21 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 laminar-core = { path = "../laminar-core" }
 
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+base64 = "0.22"
+bincode = "1"
 sha2 = "0.10"
+solana-hash = "2.3.0"
+solana-instruction = "2.3.3"
+solana-message = "2.4.0"
+solana-pubkey = "2.4.0"
+solana-signature = "2.3.0"
+solana-transaction = { version = "2.2.3", features = ["serde", "bincode"] }
 spl-associated-token-account = "7.0.0"
 spl-token = "8.0.0"
 spl-token-2022 = "8.0.1"
