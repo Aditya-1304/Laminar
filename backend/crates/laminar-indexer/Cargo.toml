@@ -8,3 +8,6 @@ authors.workspace = true
 [dependencies]
 laminar-core = { path = "../laminar-core" }
 laminar-store = { path = "../laminar-store" }
+
+serde_json.workspace = true
+thiserror.workspace = true

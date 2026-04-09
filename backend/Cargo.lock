@@ -1542,6 +1542,8 @@ version = "0.1.0"
 dependencies = [
  "laminar-core",
  "laminar-store",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
